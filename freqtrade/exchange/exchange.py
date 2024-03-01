@@ -109,7 +109,7 @@ class Exchange:
         # Lock event loop. This is necessary to avoid race-conditions when using force* commands
         # Due to funding fee fetching.
         self._loop_lock = Lock()
-        self.loop = self._init_async_loop()
+        self.loop = None #self._init_async_loop()
         self._config: Config = {}
 
         self._config.update(config)
@@ -210,9 +210,9 @@ class Exchange:
         if (self._api_async and inspect.iscoroutinefunction(self._api_async.close)
                 and self._api_async.session):
             logger.debug("Closing async ccxt session.")
-            self.loop.run_until_complete(self._api_async.close())
-        if self.loop and not self.loop.is_closed():
-            self.loop.close()
+            # self.loop.run_until_complete(self._api_async.close())
+        # if self.loop and not self.loop.is_closed():
+            # self.loop.close()
 
     def _init_async_loop(self) -> asyncio.AbstractEventLoop:
         loop = asyncio.new_event_loop()
@@ -468,11 +468,12 @@ class Exchange:
         return amount_to_contract_precision(amount, self.get_precision_amount(pair),
                                             self.precisionMode, contract_size)
 
-    def _load_async_markets(self, reload: bool = False) -> None:
+    async def _load_async_markets(self, reload: bool = False) -> None:
         try:
             if self._api_async:
-                self.loop.run_until_complete(
-                    self._api_async.load_markets(reload=reload, params={}))
+                await  self._api_async.load_markets(reload=reload, params={})
+                # self.loop.run_until_complete(
+                #     self._api_async.load_markets(reload=reload, params={}))
 
         except (asyncio.TimeoutError, ccxt.BaseError) as e:
             logger.warning('Could not load async markets. Reason: %s', e)
@@ -490,7 +491,7 @@ class Exchange:
         except ccxt.BaseError:
             logger.exception('Unable to initialize markets.')
 
-    def reload_markets(self, force: bool = False) -> None:
+    async def reload_markets(self, force: bool = False) -> None:
         """Reload markets both sync and async if refresh interval has passed """
         # Check whether markets have to be reloaded
         if (
@@ -503,7 +504,7 @@ class Exchange:
         try:
             self._markets = self._api.load_markets(reload=True, params={})
             # Also reload async markets to avoid issues with newly listed pairs
-            self._load_async_markets(reload=True)
+            await self._load_async_markets(reload=True)
             self._last_markets_refresh = dt_ts()
             self.fill_leverage_tiers()
         except ccxt.BaseError:
@@ -835,7 +836,7 @@ class Exchange:
 
     # Dry-run methods
 
-    def create_dry_run_order(self, pair: str, ordertype: str, side: str, amount: float,
+    async def create_dry_run_order(self, pair: str, ordertype: str, side: str, amount: float,
                              rate: float, leverage: float, params: Dict = {},
                              stop_loss: bool = False) -> Dict[str, Any]:
         now = dt_now()
@@ -868,11 +869,11 @@ class Exchange:
             dry_order["ft_order_type"] = "stoploss"
         orderbook: Optional[OrderBook] = None
         if self.exchange_has('fetchL2OrderBook'):
-            orderbook = self.fetch_l2_order_book(pair, 20)
+            orderbook = await self.fetch_l2_order_book(pair, 20)
         if ordertype == "limit" and orderbook:
             # Allow a 1% price difference
             allowed_diff = 0.01
-            if self._dry_is_price_crossed(pair, side, rate, orderbook, allowed_diff):
+            if await self._dry_is_price_crossed(pair, side, rate, orderbook, allowed_diff):
                 logger.info(
                     f"Converted order {pair} to market order due to price {rate} crossing spread "
                     f"by more than {allowed_diff:.2%}.")
@@ -880,7 +881,7 @@ class Exchange:
 
         if dry_order["type"] == "market" and not dry_order.get("ft_order_type"):
             # Update market order pricing
-            average = self.get_dry_market_fill_price(pair, side, amount, rate, orderbook)
+            average = await self.get_dry_market_fill_price(pair, side, amount, rate, orderbook)
             dry_order.update({
                 'average': average,
                 'filled': _amount,
@@ -891,7 +892,7 @@ class Exchange:
             # market orders will always incurr taker fees
             dry_order = self.add_dry_order_fee(pair, dry_order, 'taker')
 
-        dry_order = self.check_dry_limit_order_filled(
+        dry_order = await self.check_dry_limit_order_filled(
             dry_order, immediate=True, orderbook=orderbook)
 
         self._dry_run_open_orders[dry_order["id"]] = dry_order
@@ -914,14 +915,14 @@ class Exchange:
         })
         return dry_order
 
-    def get_dry_market_fill_price(self, pair: str, side: str, amount: float, rate: float,
+    async def get_dry_market_fill_price(self, pair: str, side: str, amount: float, rate: float,
                                   orderbook: Optional[OrderBook]) -> float:
         """
         Get the market order fill price based on orderbook interpolation
         """
         if self.exchange_has('fetchL2OrderBook'):
             if not orderbook:
-                orderbook = self.fetch_l2_order_book(pair, 20)
+                orderbook = await self.fetch_l2_order_book(pair, 20)
             ob_type: OBLiteral = 'asks' if side == 'buy' else 'bids'
             slippage = 0.05
             max_slippage_val = rate * ((1 + slippage) if side == 'buy' else (1 - slippage))
@@ -957,12 +958,12 @@ class Exchange:
 
         return rate
 
-    def _dry_is_price_crossed(self, pair: str, side: str, limit: float,
+    async def _dry_is_price_crossed(self, pair: str, side: str, limit: float,
                               orderbook: Optional[OrderBook] = None, offset: float = 0.0) -> bool:
         if not self.exchange_has('fetchL2OrderBook'):
             return True
         if not orderbook:
-            orderbook = self.fetch_l2_order_book(pair, 1)
+            orderbook = await self.fetch_l2_order_book(pair, 1)
         try:
             if side == 'buy':
                 price = orderbook['asks'][0][0]
@@ -977,7 +978,7 @@ class Exchange:
             pass
         return False
 
-    def check_dry_limit_order_filled(
+    async def check_dry_limit_order_filled(
             self, order: Dict[str, Any], immediate: bool = False,
             orderbook: Optional[OrderBook] = None) -> Dict[str, Any]:
         """
@@ -987,7 +988,7 @@ class Exchange:
                 and order['type'] in ["limit"]
                 and not order.get('ft_order_type')):
             pair = order['symbol']
-            if self._dry_is_price_crossed(pair, order['side'], order['price'], orderbook):
+            if await self._dry_is_price_crossed(pair, order['side'], order['price'], orderbook):
                 order.update({
                     'status': 'closed',
                     'filled': order['amount'],
@@ -1002,14 +1003,14 @@ class Exchange:
 
         return order
 
-    def fetch_dry_run_order(self, order_id) -> Dict[str, Any]:
+    async def fetch_dry_run_order(self, order_id) -> Dict[str, Any]:
         """
         Return dry-run order
         Only call if running in dry-run mode.
         """
         try:
-            order = self._dry_run_open_orders[order_id]
-            order = self.check_dry_limit_order_filled(order)
+            order =  self._dry_run_open_orders[order_id]
+            order = await self.check_dry_limit_order_filled(order)
             return order
         except KeyError as e:
             from freqtrade.persistence import Order
@@ -1051,7 +1052,7 @@ class Exchange:
             or self._ft_has.get('marketOrderRequiresPrice', False)
         )
 
-    def create_order(
+    async def create_order(
         self,
         *,
         pair: str,
@@ -1064,7 +1065,7 @@ class Exchange:
         time_in_force: str = 'GTC',
     ) -> Dict:
         if self._config['dry_run']:
-            dry_order = self.create_dry_run_order(
+            dry_order = await self.create_dry_run_order(
                 pair, ordertype, side, amount, self.price_to_precision(pair, rate), leverage)
             return dry_order
 
@@ -1079,7 +1080,7 @@ class Exchange:
             if not reduceOnly:
                 self._lev_prep(pair, leverage, side)
 
-            order = self._api.create_order(
+            order = await self._api_async.create_order( #self._api.create_order(
                 pair,
                 ordertype,
                 side,
@@ -1172,7 +1173,7 @@ class Exchange:
         return params
 
     @retrier(retries=0)
-    def create_stoploss(self, pair: str, amount: float, stop_price: float, order_types: Dict,
+    async def create_stoploss(self, pair: str, amount: float, stop_price: float, order_types: Dict,
                         side: BuySell, leverage: float) -> Dict:
         """
         creates a stoploss order.
@@ -1202,7 +1203,7 @@ class Exchange:
             limit_rate = self.price_to_precision(pair, limit_rate, rounding_mode=round_mode)
 
         if self._config['dry_run']:
-            dry_order = self.create_dry_run_order(
+            dry_order = await self.create_dry_run_order(
                 pair,
                 ordertype,
                 side,
@@ -1226,8 +1227,9 @@ class Exchange:
             amount = self.amount_to_precision(pair, self._amount_to_contracts(pair, amount))
 
             self._lev_prep(pair, leverage, side, accept_fail=True)
-            order = self._api.create_order(symbol=pair, type=ordertype, side=side,
+            order = await self._api_async.create_order(symbol=pair, type=ordertype, side=side,
                                            amount=amount, price=limit_rate, params=params)
+
             self._log_exchange_response('create_stoploss_order', order)
             order = self._order_contracts_to_amount(order)
             logger.info(f"stoploss {user_order_type} order added for {pair}. "
@@ -1255,11 +1257,12 @@ class Exchange:
             raise OperationalException(e) from e
 
     @retrier(retries=API_FETCH_ORDER_RETRY_COUNT)
-    def fetch_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+    async def fetch_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
         if self._config['dry_run']:
-            return self.fetch_dry_run_order(order_id)
+            return await self.fetch_dry_run_order(order_id)
         try:
-            order = self._api.fetch_order(order_id, pair, params=params)
+            order = await self._api_async.fetch_order(order_id, pair, params = params)
+            # order = self._api.fetch_order(order_id, pair, params=params)
             self._log_exchange_response('fetch_order', order)
             order = self._order_contracts_to_amount(order)
             return order
@@ -1277,10 +1280,10 @@ class Exchange:
         except ccxt.BaseError as e:
             raise OperationalException(e) from e
 
-    def fetch_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
-        return self.fetch_order(order_id, pair, params)
+    async def fetch_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+        return await self.fetch_order(order_id, pair, params)
 
-    def fetch_order_or_stoploss_order(self, order_id: str, pair: str,
+    async def fetch_order_or_stoploss_order(self, order_id: str, pair: str,
                                       stoploss_order: bool = False) -> Dict:
         """
         Simple wrapper calling either fetch_order or fetch_stoploss_order depending on
@@ -1290,8 +1293,8 @@ class Exchange:
         :param stoploss_order: If true, uses fetch_stoploss_order, otherwise fetch_order.
         """
         if stoploss_order:
-            return self.fetch_stoploss_order(order_id, pair)
-        return self.fetch_order(order_id, pair)
+            return await self.fetch_stoploss_order(order_id, pair)
+        return await self.fetch_order(order_id, pair)
 
     def check_order_canceled_empty(self, order: Dict) -> bool:
         """
@@ -1303,10 +1306,10 @@ class Exchange:
                 and order.get('filled') == 0.0)
 
     @retrier
-    def cancel_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+    async def cancel_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
         if self._config['dry_run']:
             try:
-                order = self.fetch_dry_run_order(order_id)
+                order = await self.fetch_dry_run_order(order_id)
 
                 order.update({'status': 'canceled', 'filled': 0.0, 'remaining': order['amount']})
                 return order
@@ -1329,8 +1332,8 @@ class Exchange:
         except ccxt.BaseError as e:
             raise OperationalException(e) from e
 
-    def cancel_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
-        return self.cancel_order(order_id, pair, params)
+    async def cancel_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+        return await self.cancel_order(order_id, pair, params)
 
     def is_cancel_order_result_suitable(self, corder) -> bool:
         if not isinstance(corder, dict):
@@ -1339,7 +1342,7 @@ class Exchange:
         required = ('fee', 'status', 'amount')
         return all(corder.get(k, None) is not None for k in required)
 
-    def cancel_order_with_result(self, order_id: str, pair: str, amount: float) -> Dict:
+    async def cancel_order_with_result(self, order_id: str, pair: str, amount: float) -> Dict:
         """
         Cancel order returning a result.
         Creates a fake result if cancel order returns a non-usable result
@@ -1350,13 +1353,13 @@ class Exchange:
         :return: Result from either cancel_order if usable, or fetch_order
         """
         try:
-            corder = self.cancel_order(order_id, pair)
+            corder = await self.cancel_order(order_id, pair)
             if self.is_cancel_order_result_suitable(corder):
                 return corder
         except InvalidOrderException:
             logger.warning(f"Could not cancel order {order_id} for {pair}.")
         try:
-            order = self.fetch_order(order_id, pair)
+            order = await self.fetch_order(order_id, pair)
         except InvalidOrderException:
             logger.warning(f"Could not fetch cancelled order {order_id}.")
             order = {
@@ -1370,7 +1373,7 @@ class Exchange:
 
         return order
 
-    def cancel_stoploss_order_with_result(self, order_id: str, pair: str, amount: float) -> Dict:
+    async def cancel_stoploss_order_with_result(self, order_id: str, pair: str, amount: float) -> Dict:
         """
         Cancel stoploss order returning a result.
         Creates a fake result if cancel order returns a non-usable result
@@ -1380,11 +1383,11 @@ class Exchange:
         :param amount: Amount to use for fake response
         :return: Result from either cancel_order if usable, or fetch_order
         """
-        corder = self.cancel_stoploss_order(order_id, pair)
+        corder = await  self.cancel_stoploss_order(order_id, pair)
         if self.is_cancel_order_result_suitable(corder):
             return corder
         try:
-            order = self.fetch_stoploss_order(order_id, pair)
+            order = await self.fetch_stoploss_order(order_id, pair)
         except InvalidOrderException:
             logger.warning(f"Could not fetch cancelled stoploss order {order_id}.")
             order = {'id': order_id, 'fee': {}, 'status': 'canceled', 'amount': amount, 'info': {}}
@@ -1392,10 +1395,10 @@ class Exchange:
         return order
 
     @retrier
-    def get_balances(self) -> dict:
+    async def get_balances(self) -> dict:
 
         try:
-            balances = self._api.fetch_balance()
+            balances = await self._api_async.fetch_balance() #  self._api.fetch_balance()
             # Remove additional info from ccxt results
             balances.pop("info", None)
             balances.pop("free", None)
@@ -1412,7 +1415,7 @@ class Exchange:
             raise OperationalException(e) from e
 
     @retrier
-    def fetch_positions(self, pair: Optional[str] = None) -> List[Dict]:
+    async def fetch_positions(self, pair: Optional[str] = None) -> List[Dict]:
         """
         Fetch positions from the exchange.
         If no pair is given, all positions are returned.
@@ -1424,7 +1427,7 @@ class Exchange:
             symbols = []
             if pair:
                 symbols.append(pair)
-            positions: List[Dict] = self._api.fetch_positions(symbols)
+            positions: List[Dict] = await self._api_async.fetch_positions(symbols) # self._api.fetch_positions(symbols)
             self._log_exchange_response('fetch_positions', positions)
             return positions
         except ccxt.DDoSProtection as e:
@@ -1435,17 +1438,17 @@ class Exchange:
         except ccxt.BaseError as e:
             raise OperationalException(e) from e
 
-    def _fetch_orders_emulate(self, pair: str, since_ms: int) -> List[Dict]:
+    async def _fetch_orders_emulate(self, pair: str, since_ms: int) -> List[Dict]:
         orders = []
         if self.exchange_has('fetchClosedOrders'):
-            orders = self._api.fetch_closed_orders(pair, since=since_ms)
+            orders = await self._api_async.fetch_closed_orders(pair, since=since_ms) #self._api.fetch_closed_orders(pair, since=since_ms)
             if self.exchange_has('fetchOpenOrders'):
-                orders_open = self._api.fetch_open_orders(pair, since=since_ms)
+                orders_open = await self._api_async.fetch_open_orders(pair, since=since_ms) #self._api.fetch_open_orders(pair, since=since_ms)
                 orders.extend(orders_open)
         return orders
 
     @retrier(retries=0)
-    def fetch_orders(self, pair: str, since: datetime, params: Optional[Dict] = None) -> List[Dict]:
+    async def fetch_orders(self, pair: str, since: datetime, params: Optional[Dict] = None) -> List[Dict]:
         """
         Fetch all orders for a pair "since"
         :param pair: Pair for the query
@@ -1461,11 +1464,11 @@ class Exchange:
                 if not params:
                     params = {}
                 try:
-                    orders: List[Dict] = self._api.fetch_orders(pair, since=since_ms, params=params)
+                    orders: List[Dict] = await self._api_async.fetch_orders(pair, since=since_ms, params=params) #self._api.fetch_orders(pair, since=since_ms, params=params)
                 except ccxt.NotSupported:
                     # Some exchanges don't support fetchOrders
                     # attempt to fetch open and closed orders separately
-                    orders = self._fetch_orders_emulate(pair, since_ms)
+                    orders = await self._fetch_orders_emulate(pair, since_ms)
             else:
                 orders = self._fetch_orders_emulate(pair, since_ms)
             self._log_exchange_response('fetch_orders', orders)
@@ -1480,7 +1483,7 @@ class Exchange:
             raise OperationalException(e) from e
 
     @retrier
-    def fetch_trading_fees(self) -> Dict[str, Any]:
+    async def fetch_trading_fees(self) -> Dict[str, Any]:
         """
         Fetch user account trading fees
         Can be cached, should not update often.
@@ -1489,7 +1492,8 @@ class Exchange:
                 or not self.exchange_has('fetchTradingFees')):
             return {}
         try:
-            trading_fees: Dict[str, Any] = self._api.fetch_trading_fees()
+            trading_fees: Dict[str, Any] = await self._api_async.fetch_trading_fees() #self._api.fetch_trading_fees()
+            self._api_async.fetch_trading_fees()
             self._log_exchange_response('fetch_trading_fees', trading_fees)
             return trading_fees
         except ccxt.DDoSProtection as e:
@@ -1515,7 +1519,7 @@ class Exchange:
             if tickers:
                 return tickers
         try:
-            tickers = self._api.fetch_bids_asks(symbols)
+            tickers =  self._api.fetch_bids_asks(symbols)
             with self._cache_lock:
                 self._fetch_tickers_cache['fetch_bids_asks'] = tickers
             return tickers
@@ -1557,7 +1561,8 @@ class Exchange:
         except ccxt.BadSymbol as e:
             logger.warning(f"Could not load tickers due to {e.__class__.__name__}. Message: {e} ."
                            "Reloading markets.")
-            self.reload_markets(True)
+
+            asyncio.get_event_loop().call_soon(self.reload_markets(True))  #await self.reload_markets(True)
             # Re-raise exception to repeat the call.
             raise TemporaryError from e
         except ccxt.DDoSProtection as e:
@@ -1571,12 +1576,12 @@ class Exchange:
     # Pricing info
 
     @retrier
-    def fetch_ticker(self, pair: str) -> Ticker:
+    async def fetch_ticker(self, pair: str) -> Ticker:
         try:
             if (pair not in self.markets or
                     self.markets[pair].get('active', False) is False):
                 raise ExchangeError(f"Pair {pair} not available")
-            data: Ticker = self._api.fetch_ticker(pair)
+            data: Ticker = await self._api_async.fetch_ticker(pair) #self._api.fetch_ticker(pair)
             return data
         except ccxt.DDoSProtection as e:
             raise DDosProtection(e) from e
@@ -1603,7 +1608,7 @@ class Exchange:
         return result
 
     @retrier
-    def fetch_l2_order_book(self, pair: str, limit: int = 100) -> OrderBook:
+    async def fetch_l2_order_book(self, pair: str, limit: int = 100) -> OrderBook:
         """
         Get L2 order book from exchange.
         Can be limited to a certain amount (if supported).
@@ -1614,7 +1619,7 @@ class Exchange:
                                              self._ft_has['l2_limit_range_required'])
         try:
 
-            return self._api.fetch_l2_order_book(pair, limit1)
+            return await self._api_async.fetch_l2_order_book(pair, limit1) #self._api.fetch_l2_order_book(pair, limit1)
         except ccxt.NotSupported as e:
             raise OperationalException(
                 f'Exchange {self._api.name} does not support fetching order book.'
@@ -1644,7 +1649,7 @@ class Exchange:
             price_side = price_map[(side, 'short' if is_short else 'long', price_side)]
         return price_side
 
-    def get_rate(self, pair: str, refresh: bool,
+    async def get_rate(self, pair: str, refresh: bool,
                  side: EntryExit, is_short: bool,
                  order_book: Optional[OrderBook] = None, ticker: Optional[Ticker] = None) -> float:
         """
@@ -1678,13 +1683,13 @@ class Exchange:
 
             order_book_top = conf_strategy.get('order_book_top', 1)
             if order_book is None:
-                order_book = self.fetch_l2_order_book(pair, order_book_top)
+                order_book = await self.fetch_l2_order_book(pair, order_book_top)
             rate = self._get_rate_from_ob(pair, side, order_book, name, price_side,
                                           order_book_top)
         else:
             logger.debug(f"Using Last {price_side.capitalize()} / Last Price")
             if ticker is None:
-                ticker = self.fetch_ticker(pair)
+                ticker = await self.fetch_ticker(pair)
             rate = self._get_rate_from_ticker(side, ticker, conf_strategy, price_side)
 
         if rate is None:
@@ -1731,7 +1736,7 @@ class Exchange:
                      f"side - top {order_book_top} order book {side} rate {rate:.8f}")
         return rate
 
-    def get_rates(self, pair: str, refresh: bool, is_short: bool) -> Tuple[float, float]:
+    async def get_rates(self, pair: str, refresh: bool, is_short: bool) -> Tuple[float, float]:
         entry_rate = None
         exit_rate = None
         if not refresh:
@@ -1749,20 +1754,20 @@ class Exchange:
         if not entry_rate and entry_pricing.get('use_order_book', False):
             order_book_top = max(entry_pricing.get('order_book_top', 1),
                                  exit_pricing.get('order_book_top', 1))
-            order_book = self.fetch_l2_order_book(pair, order_book_top)
-            entry_rate = self.get_rate(pair, refresh, 'entry', is_short, order_book=order_book)
+            order_book = await self.fetch_l2_order_book(pair, order_book_top)
+            entry_rate = await self.get_rate(pair, refresh, 'entry', is_short, order_book=order_book)
         elif not entry_rate:
-            ticker = self.fetch_ticker(pair)
-            entry_rate = self.get_rate(pair, refresh, 'entry', is_short, ticker=ticker)
+            ticker = await self.fetch_ticker(pair)
+            entry_rate = await self.get_rate(pair, refresh, 'entry', is_short, ticker=ticker)
         if not exit_rate:
-            exit_rate = self.get_rate(pair, refresh, 'exit',
+            exit_rate = await self.get_rate(pair, refresh, 'exit',
                                       is_short, order_book=order_book, ticker=ticker)
         return entry_rate, exit_rate
 
     # Fee handling
 
     @retrier
-    def get_trades_for_order(self, order_id: str, pair: str, since: datetime,
+    async def get_trades_for_order(self, order_id: str, pair: str, since: datetime,
                              params: Optional[Dict] = None) -> List:
         """
         Fetch Orders using the "fetch_my_trades" endpoint and filter them by order-id.
@@ -1788,7 +1793,7 @@ class Exchange:
             # Allow 5s offset to catch slight time offsets (discovered in #1185)
             # since needs to be int in milliseconds
             _params = params if params else {}
-            my_trades = self._api.fetch_my_trades(
+            my_trades = await self._api_async.fetch_my_trades( #self._api.fetch_my_trades(
                 pair, int((since.replace(tzinfo=timezone.utc).timestamp() - 5) * 1000),
                 params=_params)
             matched_trades = [trade for trade in my_trades if trade['order'] == order_id]
@@ -1856,7 +1861,7 @@ class Exchange:
                 and order['fee']['cost'] is not None
                 )
 
-    def calculate_fee_rate(
+    async def calculate_fee_rate(
             self, fee: Dict, symbol: str, cost: float, amount: float) -> Optional[float]:
         """
         Calculate fee rate if it's not given by the exchange.
@@ -1886,7 +1891,7 @@ class Exchange:
                 return None
             try:
                 comb = self.get_valid_pair_combination(fee_curr, self._config['stake_currency'])
-                tick = self.fetch_ticker(comb)
+                tick = await self.fetch_ticker(comb)
 
                 fee_to_quote_rate = safe_value_fallback2(tick, tick, 'last', 'ask')
             except (ValueError, ExchangeError):
@@ -1895,7 +1900,7 @@ class Exchange:
                     return None
             return round((fee_cost * fee_to_quote_rate) / cost, 8)
 
-    def extract_cost_curr_rate(self, fee: Dict, symbol: str, cost: float,
+    async def extract_cost_curr_rate(self, fee: Dict, symbol: str, cost: float,
                                amount: float) -> Tuple[float, str, Optional[float]]:
         """
         Extract tuple of cost, currency, rate.
@@ -2070,7 +2075,7 @@ class Exchange:
                 self._klines[(pair, timeframe, c_type)] = ohlcv_df
         return ohlcv_df
 
-    def refresh_latest_ohlcv(self, pair_list: ListPairsWithTimeframes, *,
+    async def refresh_latest_ohlcv(self, pair_list: ListPairsWithTimeframes, *,
                              since_ms: Optional[int] = None, cache: bool = True,
                              drop_incomplete: Optional[bool] = None
                              ) -> Dict[PairWithTimeframe, DataFrame]:
@@ -2093,12 +2098,12 @@ class Exchange:
         results_df = {}
         # Chunk requests into batches of 100 to avoid overwelming ccxt Throttling
         for input_coro in chunks(input_coroutines, 100):
-            async def gather_stuff():
-                return await asyncio.gather(*input_coro, return_exceptions=True)
+            # async def gather_stuff():
+            #     return await asyncio.gather(*input_coro, return_exceptions=True)
 
-            with self._loop_lock:
-                results = self.loop.run_until_complete(gather_stuff())
-
+            # with self._loop_lock:
+            #     results = self.loop.run_until_complete(gather_stuff())
+            results = await asyncio.gather(*input_coro, return_exceptions=True)
             for res in results:
                 if isinstance(res, Exception):
                     logger.warning(f"Async code raised an exception: {repr(res)}")
@@ -2418,7 +2423,7 @@ class Exchange:
             return self.loop.run_until_complete(task)
 
     @retrier
-    def _get_funding_fees_from_exchange(self, pair: str, since: Union[datetime, int]) -> float:
+    async def _get_funding_fees_from_exchange(self, pair: str, since: Union[datetime, int]) -> float:
         """
         Returns the sum of all funding fees that were exchanged for a pair within a timeframe
         Dry-run handling happens as part of _calculate_funding_fees.
@@ -2435,7 +2440,7 @@ class Exchange:
             since = int(since.timestamp()) * 1000   # * 1000 for ms
 
         try:
-            funding_history = self._api.fetch_funding_history(
+            funding_history = await self._api_async.fetch_funding_history( #self._api.fetch_funding_history(
                 symbol=pair,
                 since=since
             )
@@ -2733,7 +2738,7 @@ class Exchange:
         except ccxt.BaseError as e:
             raise OperationalException(e) from e
 
-    def _fetch_and_calculate_funding_fees(
+    async def _fetch_and_calculate_funding_fees(
         self,
         pair: str,
         amount: float,
@@ -2767,7 +2772,7 @@ class Exchange:
         mark_comb: PairWithTimeframe = (pair, timeframe, mark_price_type)
         funding_comb: PairWithTimeframe = (pair, timeframe_ff, CandleType.FUNDING_RATE)
 
-        candle_histories = self.refresh_latest_ohlcv(
+        candle_histories = await  self.refresh_latest_ohlcv(
             [mark_comb, funding_comb],
             since_ms=since_ms,
             cache=False,
@@ -2849,7 +2854,7 @@ class Exchange:
         # Negate fees for longs as funding_fees expects it this way based on live endpoints.
         return fees if is_short else -fees
 
-    def get_funding_fees(
+    async def get_funding_fees(
             self, pair: str, amount: float, is_short: bool, open_date: datetime) -> float:
         """
         Fetch funding fees, either from the exchange (live) or calculates them
@@ -2863,17 +2868,17 @@ class Exchange:
         if self.trading_mode == TradingMode.FUTURES:
             try:
                 if self._config['dry_run']:
-                    funding_fees = self._fetch_and_calculate_funding_fees(
+                    funding_fees = await self._fetch_and_calculate_funding_fees(
                         pair, amount, is_short, open_date)
                 else:
-                    funding_fees = self._get_funding_fees_from_exchange(pair, open_date)
+                    funding_fees = await self._get_funding_fees_from_exchange(pair, open_date)
                 return funding_fees
             except ExchangeError:
                 logger.warning(f"Could not update funding fees for {pair}.")
 
         return 0.0
 
-    def get_liquidation_price(
+    async def get_liquidation_price(
         self,
         pair: str,
         # Dry-run
@@ -2910,7 +2915,7 @@ class Exchange:
                 upnl_ex_1=upnl_ex_1
             )
         else:
-            positions = self.fetch_positions(pair)
+            positions = await self.fetch_positions(pair)
             if len(positions) > 0:
                 pos = positions[0]
                 liquidation_price = pos['liquidationPrice']

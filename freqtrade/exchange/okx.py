@@ -185,13 +185,13 @@ class Okx(Exchange):
             params['posSide'] = self._get_posSide(side, True)
         return params
 
-    def _convert_stop_order(self, pair: str, order_id: str, order: Dict) -> Dict:
+    async def _convert_stop_order(self, pair: str, order_id: str, order: Dict) -> Dict:
         if (
             order.get('status', 'open') == 'closed'
             and (real_order_id := order.get('info', {}).get('ordId')) is not None
         ):
             # Once a order triggered, we fetch the regular followup order.
-            order_reg = self.fetch_order(real_order_id, pair)
+            order_reg = await self.fetch_order(real_order_id, pair)
             self._log_exchange_response('fetch_stoploss_order1', order_reg)
             order_reg['id_stop'] = order_reg['id']
             order_reg['id'] = order_id
@@ -202,9 +202,9 @@ class Okx(Exchange):
         order['type'] = 'stoploss'
         return order
 
-    def fetch_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+    async def fetch_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
         if self._config['dry_run']:
-            return self.fetch_dry_run_order(order_id)
+            return await self.fetch_dry_run_order(order_id)
 
         try:
             params1 = {'stop': True}
@@ -232,11 +232,11 @@ class Okx(Exchange):
             return safe_value_fallback2(order, order, 'id_stop', 'id')
         return order['id']
 
-    def cancel_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+    async def cancel_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
         params1 = {'stop': True}
         # 'ordType': 'conditional'
         #
-        return self.cancel_order(
+        return await self.cancel_order(
             order_id=order_id,
             pair=pair,
             params=params1,

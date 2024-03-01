@@ -1,4 +1,5 @@
 """ Binance exchange subclass """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,11 +52,11 @@ class Binance(Exchange):
     ]
 
     def get_tickers(self, symbols: Optional[List[str]] = None, cached: bool = False) -> Tickers:
-        tickers = super().get_tickers(symbols=symbols, cached=cached)
+        tickers =   super().get_tickers(symbols=symbols, cached=cached)
         if self.trading_mode == TradingMode.FUTURES:
             # Binance's future result has no bid/ask values.
             # Therefore we must fetch that from fetch_bids_asks and combine the two results.
-            bidsasks = self.fetch_bids_asks(symbols, cached)
+            bidsasks =  self.fetch_bids_asks(symbols, cached)
             tickers = deep_merge_dicts(bidsasks, tickers, allow_null_overrides=False)
         return tickers
 

@@ -210,7 +210,7 @@ class Bybit(Exchange):
                 logger.warning(f"Could not update funding fees for {pair}.")
         return 0.0
 
-    def fetch_orders(self, pair: str, since: datetime, params: Optional[Dict] = None) -> List[Dict]:
+    async def fetch_orders(self, pair: str, since: datetime, params: Optional[Dict] = None) -> List[Dict]:
         """
         Fetch all orders for a pair "since"
         :param pair: Pair for the query
@@ -222,7 +222,7 @@ class Bybit(Exchange):
 
         while since < dt_now():
             until = since + timedelta(days=7, minutes=-1)
-            orders += super().fetch_orders(pair, since, params={'until': dt_ts(until)})
+            orders += await super().fetch_orders(pair, since, params={'until': dt_ts(until)})
             since = until
 
         return orders

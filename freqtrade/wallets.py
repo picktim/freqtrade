@@ -1,6 +1,7 @@
 # pragma pylint: disable=W0603
 """ Wallet """
 
+import asyncio
 import logging
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -44,7 +45,7 @@ class Wallets:
         self._positions: Dict[str, PositionWallet] = {}
         self.start_cap = config['dry_run_wallet']
         self._last_wallet_refresh: Optional[datetime] = None
-        self.update()
+        asyncio.get_event_loop().create_task( self.update())
 
     def get_free(self, currency: str) -> float:
         balance = self._wallets.get(currency)
@@ -126,8 +127,8 @@ class Wallets:
         self._wallets = _wallets
         self._positions = _positions
 
-    def _update_live(self) -> None:
-        balances = self._exchange.get_balances()
+    async def _update_live(self) -> None:
+        balances = await self._exchange.get_balances()
 
         for currency in balances:
             if isinstance(balances[currency], dict):
@@ -142,7 +143,7 @@ class Wallets:
             if currency not in balances:
                 del self._wallets[currency]
 
-        positions = self._exchange.fetch_positions()
+        positions = await self._exchange.fetch_positions()
         self._positions = {}
         for position in positions:
             symbol = position['symbol']
@@ -159,7 +160,7 @@ class Wallets:
                 side=position['side']
             )
 
-    def update(self, require_update: bool = True) -> None:
+    async def update(self, require_update: bool = True) -> None:
         """
         Updates wallets from the configured version.
         By default, updates from the exchange.
@@ -174,7 +175,7 @@ class Wallets:
             or (self._last_wallet_refresh + timedelta(seconds=3600) < now)
         ):
             if (not self._config['dry_run'] or self._config.get('runmode') == RunMode.LIVE):
-                self._update_live()
+                await self._update_live()
             else:
                 self._update_dry()
             if self._log:
@@ -203,7 +204,7 @@ class Wallets:
             return True
         return False
 
-    def check_exit_amount(self, trade: Trade) -> bool:
+    async def check_exit_amount(self, trade: Trade) -> bool:
         """
         Checks if the exit amount is available in the wallet.
         :param trade: Trade to check
@@ -211,7 +212,7 @@ class Wallets:
         """
         if not self._check_exit_amount(trade):
             # Update wallets just to make sure
-            self.update()
+            await self.update()
             return self._check_exit_amount(trade)
 
         return True
@@ -298,7 +299,7 @@ class Wallets:
 
         return stake_amount
 
-    def get_trade_stake_amount(
+    async def get_trade_stake_amount(
             self, pair: str, max_open_trades: IntOrInf, edge=None, update: bool = True) -> float:
         """
         Calculate stake amount for the trade
@@ -308,7 +309,7 @@ class Wallets:
         stake_amount: float
         # Ensure wallets are uptodate.
         if update:
-            self.update()
+            await self.update()
         val_tied_up = Trade.total_open_trades_stakes()
         available_amount = self.get_available_stake_amount()
 

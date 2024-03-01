@@ -434,7 +434,7 @@ class DataProvider:
 
     # Exchange functions
 
-    def refresh(self,
+    async def refresh(self,
                 pairlist: ListPairsWithTimeframes,
                 helping_pairs: Optional[ListPairsWithTimeframes] = None) -> None:
         """
@@ -443,7 +443,7 @@ class DataProvider:
         if self._exchange is None:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
         final_pairs = (pairlist + helping_pairs) if helping_pairs else pairlist
-        self._exchange.refresh_latest_ohlcv(final_pairs)
+        await self._exchange.refresh_latest_ohlcv(final_pairs)
 
     @property
     def available_pairs(self) -> ListPairsWithTimeframes:
@@ -493,7 +493,7 @@ class DataProvider:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
         return self._exchange.markets.get(pair)
 
-    def ticker(self, pair: str):
+    async def ticker(self, pair: str):
         """
         Return last ticker data from exchange
         :param pair: Pair to get the data for
@@ -502,11 +502,11 @@ class DataProvider:
         if self._exchange is None:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
         try:
-            return self._exchange.fetch_ticker(pair)
+            return await self._exchange.fetch_ticker(pair)
         except ExchangeError:
             return {}
 
-    def orderbook(self, pair: str, maximum: int) -> OrderBook:
+    async def orderbook(self, pair: str, maximum: int) -> OrderBook:
         """
         Fetch latest l2 orderbook data
         Warning: Does a network request - so use with common sense.
@@ -516,7 +516,7 @@ class DataProvider:
         """
         if self._exchange is None:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
-        return self._exchange.fetch_l2_order_book(pair, maximum)
+        return await self._exchange.fetch_l2_order_book(pair, maximum)
 
     def send_msg(self, message: str, *, always_send: bool = False) -> None:
         """

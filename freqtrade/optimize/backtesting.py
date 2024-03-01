@@ -3,6 +3,7 @@
 """
 This module contains the backtesting logic
 """
+import asyncio
 import logging
 from collections import defaultdict
 from copy import deepcopy
@@ -556,7 +557,7 @@ class Backtesting:
                 pos_trade = self._enter_trade(
                     trade.pair, row, 'short' if trade.is_short else 'long', stake_amount, trade)
                 if pos_trade is not None:
-                    self.wallets.update()
+                    asyncio.run(self.wallets.update())
                     return pos_trade
 
         if stake_amount is not None and stake_amount < 0.0:
@@ -602,7 +603,7 @@ class Backtesting:
 
             if not (order.ft_order_side == trade.exit_side and order.safe_amount == trade.amount):
                 # trade is still open
-                trade.set_liquidation_price(self.exchange.get_liquidation_price(
+                trade.set_liquidation_price(asyncio.run( self.exchange.get_liquidation_price(
                     pair=trade.pair,
                     open_rate=trade.open_rate,
                     is_short=trade.is_short,
@@ -610,7 +611,7 @@ class Backtesting:
                     stake_amount=trade.stake_amount,
                     leverage=trade.leverage,
                     wallet_balance=trade.stake_amount,
-                ))
+                )))
                 self._call_adjust_stop(current_date, trade, order.ft_price)
                 # pass
             return True
@@ -1129,7 +1130,7 @@ class Backtesting:
                 # Close trade
                 open_trade_count_start -= 1
                 LocalTrade.remove_bt_trade(t)
-                self.wallets.update()
+                asyncio.run(self.wallets.update())
 
         # 2. Process entries.
         # without positionstacking, we can only have one open trade per pair.
@@ -1199,7 +1200,7 @@ class Backtesting:
         """
         self.prepare_backtest(self.enable_protections)
         # Ensure wallets are uptodate (important for --strategy-list)
-        self.wallets.update()
+        asyncio.run(self.wallets.update())
         # Use dict of lists with data for performance
         # (looping lists is a lot faster than pandas DataFrames)
         data: Dict = self._get_ohlcv_as_lists(processed)

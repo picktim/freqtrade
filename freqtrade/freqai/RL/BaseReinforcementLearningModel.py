@@ -200,7 +200,7 @@ class BaseReinforcementLearningModel(IFreqaiModel):
         """
         return
 
-    def get_state_info(self, pair: str) -> Tuple[float, float, int]:
+    async def get_state_info(self, pair: str) -> Tuple[float, float, int]:
         """
         State info during dry/live (not backtesting) which is fed back
         into the model.
@@ -222,7 +222,7 @@ class BaseReinforcementLearningModel(IFreqaiModel):
                     logger.error('No exchange available.')
                     return 0, 0, 0
                 else:
-                    current_rate = self.data_provider._exchange.get_rate(  # type: ignore
+                    current_rate = await  self.data_provider._exchange.get_rate(  # type: ignore
                                 pair, refresh=False, side="exit", is_short=trade.is_short)
 
                 now = datetime.now(timezone.utc).timestamp()

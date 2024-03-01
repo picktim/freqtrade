@@ -100,8 +100,8 @@ class Gate(Exchange):
             return safe_value_fallback2(order, order, 'id_stop', 'id')
         return order['id']
 
-    def fetch_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
-        order = self.fetch_order(
+    async def fetch_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+        order = await self.fetch_order(
             order_id=order_id,
             pair=pair,
             params={'stop': True}
@@ -111,7 +111,7 @@ class Gate(Exchange):
                 # Places a real order - which we need to fetch explicitly.
                 new_orderid = order.get('info', {}).get('trade_id')
                 if new_orderid:
-                    order1 = self.fetch_order(order_id=new_orderid, pair=pair, params=params)
+                    order1 = await self.fetch_order(order_id=new_orderid, pair=pair, params=params)
                     order1['id_stop'] = order1['id']
                     order1['id'] = order_id
                     order1['stopPrice'] = order.get('stopPrice')
@@ -119,8 +119,8 @@ class Gate(Exchange):
                     return order1
         return order
 
-    def cancel_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
-        return self.cancel_order(
+    async def cancel_stoploss_order(self, order_id: str, pair: str, params: Dict = {}) -> Dict:
+        return await self.cancel_order(
             order_id=order_id,
             pair=pair,
             params={'stop': True}

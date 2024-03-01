@@ -1,11 +1,12 @@
 """
 Main Freqtrade worker class.
 """
+import asyncio
 import logging
 import time
 import traceback
 from os import getpid
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional
 
 import sdnotify
 
@@ -26,7 +27,7 @@ class Worker:
     Freqtradebot worker class
     """
 
-    def __init__(self, args: Dict[str, Any], config: Optional[Config] = None) -> None:
+    def __init__(self, args: Dict[str, Any], config: Optional[Config] = None, loop: asyncio.AbstractEventLoop = None) -> None:
         """
         Init all variables and objects the bot needs to work
         """
@@ -34,6 +35,7 @@ class Worker:
 
         self._args = args
         self._config = config
+        self.loop = loop
         self._init(False)
 
         self._heartbeat_msg: float = 0
@@ -50,7 +52,7 @@ class Worker:
             self._config = Configuration(self._args, None).get_config()
 
         # Init the instance of the bot
-        self.freqtrade = FreqtradeBot(self._config)
+        self.freqtrade = FreqtradeBot(self._config, loop= self.loop)
 
         internals_config = self._config.get('internals', {})
         self._throttle_secs = internals_config.get('process_throttle_secs',
@@ -59,6 +61,13 @@ class Worker:
 
         self._sd_notify = sdnotify.SystemdNotifier() if \
             self._config.get('internals', {}).get('sd_notify', False) else None
+
+    @staticmethod
+    async def createInstance (args: Dict[str, Any], config: Optional[Config] = None) -> None :
+        worker = Worker(args= args, config= config)
+        worker._init(False)
+        worker.freqtrade = await FreqtradeBot.createInstance(worker._config)
+        return worker
 
     def _notify(self, message: str) -> None:
         """
@@ -69,14 +78,15 @@ class Worker:
             logger.debug(f"sd_notify: {message}")
             self._sd_notify.notify(message)
 
-    def run(self) -> None:
+    async def run(self) -> None:
         state = None
+        # self.freqtrade = FreqtradeBot.createInstance(self._config)
         while True:
-            state = self._worker(old_state=state)
+            state = await  self._worker(old_state=state)
             if state == State.RELOAD_CONFIG:
-                self._reconfigure()
+                await self._reconfigure()
 
-    def _worker(self, old_state: Optional[State]) -> State:
+    async def _worker(self, old_state: Optional[State]) -> State:
         """
         The main routine that runs each throttling iteration and handles the states.
         :param old_state: the previous service state from the previous call
@@ -93,7 +103,7 @@ class Worker:
             logger.info(
                 f"Changing state{f' from {old_state.name}' if old_state else ''} to: {state.name}")
             if state == State.RUNNING:
-                self.freqtrade.startup()
+                await self.freqtrade.startup()
 
             if state == State.STOPPED:
                 self.freqtrade.check_for_open_trades()
@@ -106,14 +116,14 @@ class Worker:
             # Ping systemd watchdog before sleeping in the stopped state
             self._notify("WATCHDOG=1\nSTATUS=State: STOPPED.")
 
-            self._throttle(func=self._process_stopped, throttle_secs=self._throttle_secs)
+            await self._throttle(func=self._process_stopped(), throttle_secs=self._throttle_secs)
 
         elif state == State.RUNNING:
             # Ping systemd watchdog before throttling
             self._notify("WATCHDOG=1\nSTATUS=State: RUNNING.")
 
             # Use an offset of 1s to ensure a new candle has been issued
-            self._throttle(func=self._process_running, throttle_secs=self._throttle_secs,
+            await self._throttle(func=self._process_running(), throttle_secs=self._throttle_secs,
                            timeframe=self._config['timeframe'] if self._config else None,
                            timeframe_offset=1)
 
@@ -130,7 +140,7 @@ class Worker:
 
         return state
 
-    def _throttle(self, func: Callable[..., Any], throttle_secs: float,
+    async def _throttle(self, func: Awaitable[Any], throttle_secs: float,
                   timeframe: Optional[str] = None, timeframe_offset: float = 1.0,
                   *args, **kwargs) -> Any:
         """
@@ -144,7 +154,7 @@ class Worker:
         """
         last_throttle_start_time = time.time()
         logger.debug("========================================")
-        result = func(*args, **kwargs)
+        result = await func # func(*args, **kwargs)
         time_passed = time.time() - last_throttle_start_time
         sleep_duration = throttle_secs - time_passed
         if timeframe:
@@ -164,20 +174,20 @@ class Worker:
                      f"last iteration took {time_passed:.2f} s."
                      #  f"next: {next_iter}"
                      )
-        self._sleep(sleep_duration)
+        await asyncio.sleep(sleep_duration) # self._sleep(sleep_duration)
         return result
 
     @staticmethod
-    def _sleep(sleep_duration: float) -> None:
+    async def _sleep(sleep_duration: float) -> None:
         """Local sleep method - to improve testability"""
-        time.sleep(sleep_duration)
+        await asyncio.sleep(sleep_duration) #time.sleep(sleep_duration)
 
-    def _process_stopped(self) -> None:
-        self.freqtrade.process_stopped()
+    async def _process_stopped(self) -> None:
+        await self.freqtrade.process_stopped()
 
-    def _process_running(self) -> None:
+    async def _process_running(self) -> None:
         try:
-            self.freqtrade.process()
+            await self.freqtrade.process()
         except TemporaryError as error:
             logger.warning(f"Error: {error}, retrying in {RETRY_TIMEOUT} seconds...")
             time.sleep(RETRY_TIMEOUT)
@@ -193,7 +203,7 @@ class Worker:
             logger.exception('OperationalException. Stopping trader ...')
             self.freqtrade.state = State.STOPPED
 
-    def _reconfigure(self) -> None:
+    async def _reconfigure(self) -> None:
         """
         Cleans up current freqtradebot instance, reloads the configuration and
         replaces it with the new instance
@@ -202,7 +212,7 @@ class Worker:
         self._notify("RELOADING=1")
 
         # Clean up current freqtrade modules
-        self.freqtrade.cleanup()
+        await self.freqtrade.cleanup()
 
         # Load and validate config and create new instance of the bot
         self._init(True)
@@ -212,10 +222,10 @@ class Worker:
         # Tell systemd that we completed reconfiguration
         self._notify("READY=1")
 
-    def exit(self) -> None:
+    async def exit(self) -> None:
         # Tell systemd that we are exiting now
         self._notify("STOPPING=1")
 
         if self.freqtrade:
             self.freqtrade.notify_status('process died')
-            self.freqtrade.cleanup()
+            await self.freqtrade.cleanup()
