@@ -150,10 +150,7 @@ class FreqtradeBot(LoggingMixin):
         asyncio.get_event_loop().create_task( self.update_funding_fees())
         asyncio.get_event_loop().create_task( self.wallets.update())
 
-    @staticmethod
-    async def createInstance(config: Config)  -> None:
-        frebot = FreqtradeBot(config)
-        pass
+
 
     def notify_status(self, msg: str, msg_type=RPCMessageType.STATUS) -> None:
         """
@@ -256,11 +253,11 @@ class FreqtradeBot(LoggingMixin):
         # Check if we need to adjust our current positions before attempting to buy new trades.
         if self.strategy.position_adjustment_enable:
             with self._exit_lock:
-                self.process_open_trade_positions()
+                await self.process_open_trade_positions()
 
         # Then looking for buy opportunities
         if self.get_free_open_trades():
-            self.enter_positions()
+            await self.enter_positions()
         if self.trading_mode == TradingMode.FUTURES:
             self._schedule.run_pending()
         Trade.commit()
@@ -786,7 +783,7 @@ class FreqtradeBot(LoggingMixin):
                 entry_tag=enter_tag, side=trade_side):
             logger.info(f"User denied entry for {pair}.")
             return False
-        order = self.exchange.create_order(
+        order = await self.exchange.create_order(
             pair=pair,
             ordertype=order_type,
             side=side,
@@ -1095,7 +1092,7 @@ class FreqtradeBot(LoggingMixin):
             if (
                 not trade.has_open_orders
                 and not trade.stoploss_order_id
-                and not self.wallets.check_exit_amount(trade)
+                and not await self.wallets.check_exit_amount(trade)
             ):
                 logger.warning(
                     f'Not enough {trade.safe_base_currency} in wallet to exit {trade}. '
@@ -1399,7 +1396,7 @@ class FreqtradeBot(LoggingMixin):
             logger.warning(
                 f'Unable to emergency exit trade {trade.pair}: {exception}')
 
-    def replace_order_failed(self, trade: Trade, msg: str) -> None:
+    async def replace_order_failed(self, trade: Trade, msg: str) -> None:
         """
         Order replacement fail handling.
         Deletes the trade if necessary.
@@ -1410,7 +1407,7 @@ class FreqtradeBot(LoggingMixin):
         if trade.nr_of_successful_entries == 0:
             # this is the first entry and we didn't get filled yet, delete trade
             logger.warning(f"Removing {trade} from database.")
-            self._notify_enter_cancel(
+            await self._notify_enter_cancel(
                 trade, order_type=self.strategy.order_types['entry'],
                 reason=constants.CANCEL_REASON['REPLACE_FAILED'])
             trade.delete()
@@ -1456,7 +1453,7 @@ class FreqtradeBot(LoggingMixin):
                 res = await self.handle_cancel_enter(trade, order, order_obj, cancel_reason,
                                                replacing=replacing)
                 if not res:
-                    self.replace_order_failed(
+                    await self.replace_order_failed(
                         trade, f"Could not cancel order for {trade}, therefore not replacing.")
                     return
                 if adjusted_entry_price:
@@ -1471,12 +1468,12 @@ class FreqtradeBot(LoggingMixin):
                             is_short=trade.is_short,
                             mode='replace',
                         ):
-                            self.replace_order_failed(
+                            await self.replace_order_failed(
                                 trade, f"Could not replace order for {trade}.")
                     except DependencyException as exception:
                         logger.warning(
                             f'Unable to replace order for {trade.pair}: {exception}')
-                        self.replace_order_failed(trade, f"Could not replace order for {trade}.")
+                        await self.replace_order_failed(trade, f"Could not replace order for {trade}.")
 
     async def cancel_all_open_orders(self) -> None:
         """
