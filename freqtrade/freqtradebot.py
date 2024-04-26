@@ -346,7 +346,7 @@ class FreqtradeBot(LoggingMixin):
             if self.task_list.get(trade.pair) is None:
                 task = asyncio.get_event_loop().create_task(self.execute_manage_open_order(trade), name = trade.pair)
                 task.add_done_callback(self.task_manage_open_order_complete_handle)
-                self.tasks_list[trade.pair] = task
+                self.task_list[trade.pair] = task
             
 
     def check_for_open_trades(self):
