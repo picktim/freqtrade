@@ -5,7 +5,7 @@ from freqtrade.util.formatters import decimals_per_coin, fmt_coin, round_value
 from freqtrade.util.ft_precise import FtPrecise
 from freqtrade.util.periodic_cache import PeriodicCache
 from freqtrade.util.template_renderer import render_template, render_template_with_fallback  # noqa
-
+from freqtrade.util.disk_cache import EntityCache, EntityCacheKey
 
 __all__ = [
     'dt_floor_day',
@@ -23,4 +23,6 @@ __all__ = [
     'decimals_per_coin',
     'round_value',
     'fmt_coin',
+    'EntityCache',
+    'EntityCacheKey'
 ]

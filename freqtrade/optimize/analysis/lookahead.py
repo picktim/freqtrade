@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import shutil
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -136,7 +137,7 @@ class LookaheadAnalysis(BaseAnalysis):
         backtesting.load_bt_data_detail()
         varholder.timeframe = backtesting.timeframe
 
-        varholder.indicators = backtesting.strategy.advise_all_indicators(varholder.data)
+        varholder.indicators = asyncio.run( backtesting.strategy.advise_all_indicators(varholder.data))
         varholder.result = self.get_result(backtesting, varholder.indicators)
 
     def fill_entry_and_exit_varHolders(self, result_row):

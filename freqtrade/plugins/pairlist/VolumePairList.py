@@ -4,6 +4,7 @@ Volume PairList provider
 Provides dynamic pair list based on trade volumes
 """
 import logging
+import asyncio
 from datetime import timedelta
 from typing import Any, Dict, List, Literal
 
@@ -160,7 +161,7 @@ class VolumePairList(IPairList):
             },
         }
 
-    def gen_pairlist(self, tickers: Tickers) -> List[str]:
+    async def gen_pairlist(self, tickers: Tickers) -> List[str]:
         """
         Generate the pairlist
         :param tickers: Tickers (from exchange.get_tickers). May be cached.
@@ -190,12 +191,12 @@ class VolumePairList(IPairList):
             else:
                 pairlist = _pairlist
 
-            pairlist = self.filter_pairlist(pairlist, tickers)
+            pairlist = await self.filter_pairlist(pairlist, tickers)
             self._pair_cache['pairlist'] = pairlist.copy()
 
         return pairlist
 
-    def filter_pairlist(self, pairlist: List[str], tickers: Dict) -> List[str]:
+    async def filter_pairlist(self, pairlist: List[str], tickers: Dict) -> List[str]:
         """
         Filters and sorts pairlist and returns the whitelist again.
         Called on each bot iteration - please use internal caching if necessary
@@ -232,7 +233,7 @@ class VolumePairList(IPairList):
             # Get all candles
             candles = {}
             if needed_pairs:
-                candles = self._exchange.refresh_latest_ohlcv(
+                candles = await self._exchange.refresh_latest_ohlcv(
                     needed_pairs, since_ms=since_ms, cache=False
                 )
             for i, p in enumerate(filtered_tickers):

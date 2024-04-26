@@ -8,5 +8,5 @@ Includes:
 # flake8: noqa: F401
 from .history_utils import (convert_trades_to_ohlcv, download_data_main, get_timerange, load_data,
                             load_pair_history, refresh_backtest_ohlcv_data,
-                            refresh_backtest_trades_data, refresh_data, validate_backtest_data)
+                            refresh_backtest_trades_data, refresh_data, validate_backtest_data,async_load_pair_history_data)
 from .idatahandler import get_datahandler

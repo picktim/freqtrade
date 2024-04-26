@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from pandas import DataFrame, to_datetime
 
-from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, Config
+from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, DEFAULT_DATAFRAME_COLUMNS_BINANCE, Config
 from freqtrade.enums import CandleType, TradingMode
 
 
@@ -29,7 +29,41 @@ def ohlcv_to_dataframe(ohlcv: list, timeframe: str, pair: str, *,
     :return: DataFrame
     """
     logger.debug(f"Converting candle (OHLCV) data to dataframe for pair {pair}.")
-    cols = DEFAULT_DATAFRAME_COLUMNS
+    columns_len = len(ohlcv[0]) if len(ohlcv) > 0 else DEFAULT_DATAFRAME_COLUMNS
+    cols =DEFAULT_DATAFRAME_COLUMNS_BINANCE  if columns_len ==  len( DEFAULT_DATAFRAME_COLUMNS_BINANCE) else DEFAULT_DATAFRAME_COLUMNS
+    df = DataFrame(ohlcv, columns=cols)
+
+    df['date'] = to_datetime(df['date'], unit='ms', utc=True)
+
+    # Some exchanges return int values for Volume and even for OHLC.
+    # Convert them since TA-LIB indicators used in the strategy assume floats
+    # and fail with exception...
+    if columns_len == 7 : #hard code manual column count for delta
+        df = df.astype(dtype={'open': 'float', 'high': 'float', 'low': 'float', 'close': 'float',
+                          'volume': 'float', 'takebuyvol' :'float'})
+    else :
+        df = df.astype(dtype={'open': 'float', 'high': 'float', 'low': 'float', 'close': 'float',
+                          'volume': 'float'})
+    return clean_ohlcv_dataframe(df, timeframe, pair,
+                                 fill_missing=fill_missing,
+                                 drop_incomplete=drop_incomplete)
+
+def ohlcv_to_dataframe_with_delta(ohlcv: list, timeframe: str, pair: str, *,
+                       fill_missing: bool = True, drop_incomplete: bool = True) -> DataFrame:
+    """
+    Converts a list with candle (OHLCV) data (in format returned by ccxt.fetch_ohlcv)
+    to a Dataframe
+    :param ohlcv: list with candle (OHLCV) data, as returned by exchange.async_get_candle_history
+    :param timeframe: timeframe (e.g. 5m). Used to fill up eventual missing data
+    :param pair: Pair this data is for (used to warn if fillup was necessary)
+    :param fill_missing: fill up missing candles with 0 candles
+                         (see ohlcv_fill_up_missing_data for details)
+    :param drop_incomplete: Drop the last candle of the dataframe, assuming it's incomplete
+    :return: DataFrame
+    """
+    logger.debug(f"Converting candle (OHLCV) data to dataframe for pair {pair}.")
+    columns_len = len(ohlcv[0]) if len(ohlcv) > 0 else DEFAULT_DATAFRAME_COLUMNS
+    cols =DEFAULT_DATAFRAME_COLUMNS_BINANCE  if columns_len ==  len( DEFAULT_DATAFRAME_COLUMNS_BINANCE) else DEFAULT_DATAFRAME_COLUMNS
     df = DataFrame(ohlcv, columns=cols)
 
     df['date'] = to_datetime(df['date'], unit='ms', utc=True)
@@ -42,7 +76,6 @@ def ohlcv_to_dataframe(ohlcv: list, timeframe: str, pair: str, *,
     return clean_ohlcv_dataframe(df, timeframe, pair,
                                  fill_missing=fill_missing,
                                  drop_incomplete=drop_incomplete)
-
 
 def clean_ohlcv_dataframe(data: DataFrame, timeframe: str, pair: str, *,
                           fill_missing: bool, drop_incomplete: bool) -> DataFrame:
@@ -60,13 +93,23 @@ def clean_ohlcv_dataframe(data: DataFrame, timeframe: str, pair: str, *,
     :return: DataFrame
     """
     # group by index and aggregate results to eliminate duplicate ticks
-    data = data.groupby(by='date', as_index=False, sort=True).agg({
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'volume': 'max',
-    })
+    if len(data.columns) == 7 :
+        data = data.groupby(by='date', as_index=False, sort=True).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'max',
+            'takebuyvol' : 'max'
+        })
+    else :
+         data = data.groupby(by='date', as_index=False, sort=True).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'max',
+        })
     # eliminate partial candle
     if drop_incomplete:
         data.drop(data.tail(1).index, inplace=True)

@@ -41,7 +41,7 @@ from freqtrade.strategy.strategy_wrapper import strategy_safe_wrapper
 from freqtrade.util import FtPrecise
 from freqtrade.util.migrations import migrate_binance_futures_names
 from freqtrade.wallets import Wallets
-
+from freqtrade.util.disk_cache import EntityCache
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,9 @@ class FreqtradeBot(LoggingMixin):
         # Init bot state
         self.state = State.STOPPED
 
+        #init tasks list 
+
+        self.task_list : Dict[str,asyncio.Task] = {}
 
         # Init objects
         self.config = config
@@ -116,11 +119,13 @@ class FreqtradeBot(LoggingMixin):
         self.emc = ExternalMessageConsumer(self.config, self.dataprovider) if \
             self.config.get('external_message_consumer', {}).get('enabled', False) else None
 
-        self.active_pair_whitelist = self._refresh_active_whitelist()
+        # self.active_pair_whitelist = self._refresh_active_whitelist()
 
         # Set initial bot state from config
         initial_state = self.config.get('initial_state')
         self.state = State[initial_state.upper()] if initial_state else State.STOPPED
+        
+        self.ta_cached = EntityCache.instance(self.config)
 
         # Protect exit-logic from forcesell and vice versa
         self._exit_lock = Lock()
@@ -140,7 +145,6 @@ class FreqtradeBot(LoggingMixin):
                 for minutes in [1,31]:
                     t = str(time(time_slot, minutes, 2))
                     self._schedule.every().day.at(t).do(self.update)
-
         self.strategy.ft_bot_start()
         # Initialize protections AFTER bot start - otherwise parameters are not loaded.
         self.protections = ProtectionManager(self.config, self.strategy.protections)
@@ -227,7 +231,7 @@ class FreqtradeBot(LoggingMixin):
         # Query trades from persistence layer
         trades: List[Trade] = Trade.get_open_trades()
 
-        self.active_pair_whitelist = self._refresh_active_whitelist(trades)
+        self.active_pair_whitelist = await self._refresh_active_whitelist(trades)
 
         # Refreshing candles
         await self.dataprovider.refresh(self.pairlists.create_pair_list(self.active_pair_whitelist),
@@ -235,8 +239,14 @@ class FreqtradeBot(LoggingMixin):
 
         strategy_safe_wrapper(self.strategy.bot_loop_start, supress_error=True)(
             current_time=datetime.now(timezone.utc))
+        print('beginning task created..')
 
-        self.strategy.analyze(self.active_pair_whitelist)
+        for pair in self.active_pair_whitelist :
+
+            if self.task_list.get(pair) is None:
+                task = asyncio .get_event_loop().create_task(self.strategy.analyze_pair(pair), name= pair) 
+                task.add_done_callback(self.task_analyze_pair_complete_handle)
+                self.task_list[pair] = task
 
         with self._exit_lock:
             # Check for exchange cancelations, timeouts and user requested replace
@@ -245,24 +255,26 @@ class FreqtradeBot(LoggingMixin):
         # Protect from collisions with force_exit.
         # Without this, freqtrade may try to recreate stoploss_on_exchange orders
         # while exiting is in process, since telegram messages arrive in an different thread.
-        with self._exit_lock:
-            trades = Trade.get_open_trades()
-            # First process current opened trades (positions)
-            await self.exit_positions(trades)
+        # with self._exit_lock:
+        #     trades = Trade.get_open_trades()
+        #     # First process current opened trades (positions)
+        #     await self.exit_positions(trades)
 
         # Check if we need to adjust our current positions before attempting to buy new trades.
-        if self.strategy.position_adjustment_enable:
-            with self._exit_lock:
-                await self.process_open_trade_positions()
+        # if self.strategy.position_adjustment_enable:
+        #     with self._exit_lock:
+        #         await self.process_open_trade_positions()
 
         # Then looking for buy opportunities
-        if self.get_free_open_trades():
-            await self.enter_positions()
+        # if self.get_free_open_trades():
+        #     await self.enter_positions()
         if self.trading_mode == TradingMode.FUTURES:
             self._schedule.run_pending()
-        Trade.commit()
+        # Trade.commit()
         self.rpc.process_msg_queue(self.dataprovider._msg_queue)
         self.last_process = datetime.now(timezone.utc)
+
+
 
     async def process_stopped(self) -> None:
         """
@@ -270,6 +282,72 @@ class FreqtradeBot(LoggingMixin):
         """
         if self.config['cancel_open_orders_on_exit']:
             await self.cancel_all_open_orders()
+
+
+            
+
+    def task_analyze_pair_complete_handle(self, task:asyncio.Task) :
+        
+        # pair :str = task.get_name()
+        pair = task.get_name()
+        print('task analyze complete name : {}'.format(pair))
+        if not task.cancelled():
+            result = task.result()
+            del self.task_list[pair] 
+            if result is not None and self.get_free_open_trades():
+                print(result)
+                new_task = asyncio.get_event_loop().create_task(self.enter_position(pair), name = pair)
+                task.add_done_callback(self.enter_position_complete_handle)
+                self.task_list[pair] = new_task
+
+    def enter_position_complete_handle (self, task: asyncio.Task) :
+
+        print('task enter position complete name : {}'.format(task.get_name()))
+        
+        del self.task_list[task.get_name()] 
+
+    def task_manage_open_order_complete_handle( self, task: asyncio.Task) :
+        print('task manage order complete name : {}'.format(task.get_name()))
+        del self.task_list[task.get_name()]
+        trades =  Trade.get_open_trade(pair = task.get_name())
+        if trades is not None and len(trades) > 0:
+            trade = trades[0]
+            task = asyncio.get_event_loop().create_task(self.exit_position(trade), name = trade.pair)
+            task.add_done_callback(self.task_exit_position_complete_handle)
+            self.task_list[trade.pair] = task
+
+    def task_exit_position_complete_handle(self, task: asyncio.Task ) :
+        print('task exit complete name : {}'.format(task.get_name()))
+        Trade.commit()
+        del self.task_list[task.get_name()] 
+        if  self.strategy.position_adjustment_enable == False :
+            return
+        
+        trades =  Trade.get_open_trade(pair = task.get_name())
+        if trades is not None and len(trades) > 0 :
+            trade = trades[0]
+            task = asyncio.get_event_loop().create_task(self.process_open_trade_position(trade), name = trade.pair)
+            task.add_done_callback(self.task_process_open_trade_complete_handle)
+            self.task_list[trade.pair] = task
+
+    def task_process_open_trade_complete_handle(self, task:asyncio.Task) :
+        print('task process_open_trade complete name : {}'.format(task.get_name()))
+        del self.task_list[task.get_name()] 
+
+
+    async def manage_open_orders(self) -> None:
+        """
+        Management of open orders on exchange. Unfilled orders might be cancelled if timeout
+        was met or replaced if there's a new candle and user has requested it.
+        Timeout setting takes priority over limit order adjustment request.
+        :return: None
+        """
+        for trade in Trade.get_open_trades():
+            if self.task_list.get(trade.pair) is None:
+                task = asyncio.get_event_loop().create_task(self.execute_manage_open_order(trade), name = trade.pair)
+                task.add_done_callback(self.task_manage_open_order_complete_handle)
+                self.tasks_list[trade.pair] = task
+            
 
     def check_for_open_trades(self):
         """
@@ -290,14 +368,14 @@ class FreqtradeBot(LoggingMixin):
             }
             self.rpc.send_msg(msg)
 
-    def _refresh_active_whitelist(self, trades: List[Trade] = []) -> List[str]:
+    async def _refresh_active_whitelist(self, trades: List[Trade] = []) -> List[str]:
         """
         Refresh active whitelist from pairlist or edge and extend it with
         pairs that have open trades.
         """
         # Refresh whitelist
         _prev_whitelist = self.pairlists.whitelist
-        self.pairlists.refresh_pairlist()
+        await self.pairlists.refresh_pairlist()
         _whitelist = self.pairlists.whitelist
 
         # Calculating Edge positioning
@@ -308,8 +386,11 @@ class FreqtradeBot(LoggingMixin):
         if trades:
             # Extend active-pair whitelist with pairs of open trades
             # It ensures that candle (OHLCV) data are downloaded for open trades as well
-            _whitelist.extend([trade.pair for trade in trades if trade.pair not in _whitelist])
-
+            # _whitelist.extend([trade.pair for trade in trades if trade.pair not in _whitelist])
+            for trade in trades :
+                if trade.pair in _whitelist :
+                    _whitelist.remove(trade.pair)
+            # _whitelist.remove([trade.pair for trade in trades if trade.pair  in _whitelist])
         # Called last to include the included pairs
         if _prev_whitelist != _whitelist:
             self.rpc.send_msg({'type': RPCMessageType.WHITELIST, 'data': _whitelist})
@@ -507,7 +588,28 @@ class FreqtradeBot(LoggingMixin):
 #
 # BUY / enter positions / open trades logic and methods
 #
+    async def enter_position(self, pair:str) -> int:
+        if PairLocks.is_global_lock(side='*'):
+            # This only checks for total locks (both sides).
+            # per-side locks will be evaluated by `is_pair_locked` within create_trade,
+            # once the direction for the trade is clear.
+            lock = PairLocks.get_pair_longest_lock('*')
+            if lock:
+                self.log_once(f"Global pairlock active until "
+                              f"{lock.lock_end_time.strftime(constants.DATETIME_PRINT_FORMAT)}. "
+                              f"Not creating new trades, reason: {lock.reason}.", logger.info)
+            else:
+                self.log_once("Global pairlock active. Not creating new trades.", logger.info)
+            return
+        
+            
+        try:
+            with self._exit_lock:
+                await self.create_trade(pair)
+        except DependencyException as exception:
+            logger.warning('Unable to create trade for %s: %s', pair, exception)
 
+        
     async def enter_positions(self) -> int:
         """
         Tries to execute entry orders for new trades (positions)
@@ -547,6 +649,7 @@ class FreqtradeBot(LoggingMixin):
                     trades_created += await self.create_trade(pair)
             except DependencyException as exception:
                 logger.warning('Unable to create trade for %s: %s', pair, exception)
+                # traceback.print_exc() 
 
         if not trades_created:
             logger.debug("Found no enter signals for whitelisted currencies. Trying again...")
@@ -591,7 +694,7 @@ class FreqtradeBot(LoggingMixin):
                 else:
                     self.log_once(f"Pair {pair} is currently locked.", logger.info)
                 return False
-            stake_amount = self.wallets.get_trade_stake_amount(
+            stake_amount = await self.wallets.get_trade_stake_amount(
                 pair, self.config['max_open_trades'], self.edge)
 
             bid_check_dom = self.config.get('entry_pricing', {}).get('check_depth_of_market', {})
@@ -607,7 +710,7 @@ class FreqtradeBot(LoggingMixin):
                 else:
                     return False
 
-            return self.execute_entry(
+            return await self.execute_entry(
                 pair,
                 stake_amount,
                 enter_tag=enter_tag,
@@ -619,6 +722,15 @@ class FreqtradeBot(LoggingMixin):
 #
 # BUY / increase positions / DCA logic and methods
 #
+    async def process_open_trade_position (self, trade: Trade) :
+           if not trade.has_open_orders:
+                await self.wallets.update(False)
+                try:
+                    await self.check_and_call_adjust_trade_position(trade)
+                except DependencyException as exception:
+                    logger.warning(
+                        f"Unable to adjust position of trade for {trade.pair}: {exception}")
+    
     async def process_open_trade_positions(self):
         """
         Tries to execute additional buy or sell orders for open trades (positions)
@@ -1081,6 +1193,43 @@ class FreqtradeBot(LoggingMixin):
 #
 # SELL / exit positions / close trades logic and methods
 #
+        
+    async def exit_position (self, trade:Trade )  :
+         
+        trade_closed : int = 0
+        stoploss_on_exchange : bool = False
+        if (
+                not trade.has_open_orders
+                and not trade.stoploss_order_id
+                and not await self.wallets.check_exit_amount(trade)
+            ):
+                logger.warning(
+                    f'Not enough {trade.safe_base_currency} in wallet to exit {trade}. '
+                    'Trying to recover.')
+                await self.handle_onexchange_order(trade)
+
+                try:
+                    try:
+                        if (self.strategy.order_types.get('stoploss_on_exchange') and
+                                self.handle_stoploss_on_exchange(trade)):
+                            trade_closed += 1
+                            Trade.commit()
+                            stoploss_on_exchange = True
+
+                    except InvalidOrderException as exception:
+                        logger.warning(
+                            f'Unable to handle stoploss on exchange for {trade.pair}: {exception}')
+                    # Check if we can sell our current pair
+                    if not stoploss_on_exchange:
+                        if not trade.has_open_orders and trade.is_open and await self.handle_trade(trade):
+                            trade_closed += 1
+
+                except DependencyException as exception:
+                    logger.warning(f'Unable to exit trade {trade.pair}: {exception}')
+
+        if trade_closed > 0 :
+            await self.wallets.update()
+
 
     async def exit_positions(self, trades: List[Trade]) -> int:
         """
@@ -1119,7 +1268,7 @@ class FreqtradeBot(LoggingMixin):
 
         # Updating wallets if any trade occurred
         if trades_closed:
-            self.wallets.update()
+            await self.wallets.update()
 
         return trades_closed
 
@@ -1328,42 +1477,38 @@ class FreqtradeBot(LoggingMixin):
                 if not await self.create_stoploss_order(trade=trade, stop_price=stoploss_norm):
                     logger.warning(f"Could not create trailing stoploss order "
                                    f"for pair {trade.pair}.")
+    
+    async def execute_manage_open_order (self, trade:Trade) :
+        open_order: Order
+        for open_order in trade.open_orders:
+            try:
+                order = await self.exchange.fetch_order(open_order.order_id, trade.pair)
 
-    async def manage_open_orders(self) -> None:
-        """
-        Management of open orders on exchange. Unfilled orders might be cancelled if timeout
-        was met or replaced if there's a new candle and user has requested it.
-        Timeout setting takes priority over limit order adjustment request.
-        :return: None
-        """
-        for trade in Trade.get_open_trades():
-            open_order: Order
-            for open_order in trade.open_orders:
-                try:
-                    order = await self.exchange.fetch_order(open_order.order_id, trade.pair)
+            except (ExchangeError):
+                logger.info(
+                    'Cannot query order for %s due to %s', trade, traceback.format_exc()
+                )
+                continue
 
-                except (ExchangeError):
-                    logger.info(
-                        'Cannot query order for %s due to %s', trade, traceback.format_exc()
+            fully_cancelled = await self.update_trade_state(trade, open_order.order_id, order)
+            not_closed = order['status'] == 'open' or fully_cancelled
+
+            if not_closed:
+                if (
+                    fully_cancelled or (
+                        open_order and self.strategy.ft_check_timed_out(
+                            trade, open_order, datetime.now(timezone.utc)
+                        )
                     )
-                    continue
+                ):
+                    await self.handle_cancel_order(
+                        order, open_order, trade, constants.CANCEL_REASON['TIMEOUT']
+                    )
+                else:
+                    await self.replace_order(order, open_order, trade)
 
-                fully_cancelled = await self.update_trade_state(trade, open_order.order_id, order)
-                not_closed = order['status'] == 'open' or fully_cancelled
 
-                if not_closed:
-                    if (
-                        fully_cancelled or (
-                            open_order and self.strategy.ft_check_timed_out(
-                                trade, open_order, datetime.now(timezone.utc)
-                            )
-                        )
-                    ):
-                        await self.handle_cancel_order(
-                            order, open_order, trade, constants.CANCEL_REASON['TIMEOUT']
-                        )
-                    else:
-                        await self.replace_order(order, open_order, trade)
+       
 
     async def handle_cancel_order(self, order: Dict, order_obj: Order, trade: Trade, reason: str) -> None:
         """
@@ -1525,7 +1670,7 @@ class FreqtradeBot(LoggingMixin):
                     f"Order {order_id} for {trade.pair} not cancelled, "
                     f"as the filled amount of {filled_val} would result in an unexitable trade.")
                 return False
-            corder = self.exchange.cancel_order_with_result(order_id, trade.pair, trade.amount)
+            corder = await self.exchange.cancel_order_with_result(order_id, trade.pair, trade.amount)
             order_obj.ft_cancel_reason = reason
             # if replacing, retry fetching the order 3 times if the status is not what we need
             if replacing:
@@ -1535,7 +1680,7 @@ class FreqtradeBot(LoggingMixin):
                     and retry_count < 3
                 ):
                     sleep(0.5)
-                    corder = self.exchange.fetch_order(order_id, trade.pair)
+                    corder = await self.exchange.fetch_order(order_id, trade.pair)
                     retry_count += 1
 
             # Avoid race condition where the order could not be cancelled coz its already filled.
@@ -1570,7 +1715,7 @@ class FreqtradeBot(LoggingMixin):
         else:
             # update_trade_state (and subsequently recalc_trade_from_orders) will handle updates
             # to the trade object
-            self.update_trade_state(trade, order_id, corder)
+            await self.update_trade_state(trade, order_id, corder)
 
             logger.info(f'Partial {trade.entry_side} order timeout for {trade}.')
             order_obj.ft_cancel_reason += f", {constants.CANCEL_REASON['PARTIALLY_FILLED']}"
@@ -1614,7 +1759,7 @@ class FreqtradeBot(LoggingMixin):
                     return False
             order_obj.ft_cancel_reason = reason
             try:
-                order = self.exchange.cancel_order_with_result(
+                order = await self.exchange.cancel_order_with_result(
                     order['id'], trade.pair, trade.amount)
             except InvalidOrderException:
                 logger.exception(

@@ -377,7 +377,7 @@ class Backtesting:
             if not pair_data.empty:
                 # Cleanup from prior runs
                 pair_data.drop(HEADERS[5:] + ['buy', 'sell'], axis=1, errors='ignore')
-            df_analyzed = self.strategy.ft_advise_signals(pair_data, {'pair': pair})
+            df_analyzed = asyncio.run( self.strategy.ft_advise_signals(pair_data, {'pair': pair}))
             # Update dataprovider cache
             self.dataprovider._set_cached_df(
                 pair, self.timeframe, df_analyzed, self.config['candle_type_def'])
@@ -1308,7 +1308,7 @@ class Backtesting:
             self.config.update({'max_open_trades': self.strategy.max_open_trades})
 
         # need to reprocess data every time to populate signals
-        preprocessed = self.strategy.advise_all_indicators(data)
+        preprocessed = asyncio.run(self.strategy.advise_all_indicators(data))
 
         # Trim startup period from analyzed dataframe
         # This only used to determine if trimming would result in an empty dataframe

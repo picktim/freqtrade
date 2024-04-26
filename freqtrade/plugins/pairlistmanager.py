@@ -91,7 +91,7 @@ class PairListManager(LoggingMixin):
     def _get_cached_tickers(self) -> Tickers:
         return self._exchange.get_tickers()
 
-    def refresh_pairlist(self) -> None:
+    async def refresh_pairlist(self) -> None:
         """Run pairlist through all configured Pairlist Handlers."""
         # Tickers should be cached to avoid calling the exchange on each call.
         tickers: Dict = {}
@@ -99,12 +99,12 @@ class PairListManager(LoggingMixin):
             tickers = self._get_cached_tickers()
 
         # Generate the pairlist with first Pairlist Handler in the chain
-        pairlist = self._pairlist_handlers[0].gen_pairlist(tickers)
+        pairlist = await self._pairlist_handlers[0].gen_pairlist(tickers)
 
         # Process all Pairlist Handlers in the chain
         # except for the first one, which is the generator.
         for pairlist_handler in self._pairlist_handlers[1:]:
-            pairlist = pairlist_handler.filter_pairlist(pairlist, tickers)
+            pairlist = await pairlist_handler.filter_pairlist(pairlist, tickers)
 
         # Validation against blacklist happens after the chain of Pairlist Handlers
         # to ensure blacklist is respected.

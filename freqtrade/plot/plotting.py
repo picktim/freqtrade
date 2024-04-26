@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -646,7 +647,7 @@ def load_and_plot_trades(config: Config):
         pair_counter += 1
         logger.info("analyse pair %s", pair)
 
-        df_analyzed = strategy.analyze_ticker(data, {'pair': pair})
+        df_analyzed =  asyncio.run( strategy.analyze_ticker(data, {'pair': pair}))
         df_analyzed = trim_dataframe(df_analyzed, timerange)
         if not trades.empty:
             trades_pair = trades.loc[trades['pair'] == pair]

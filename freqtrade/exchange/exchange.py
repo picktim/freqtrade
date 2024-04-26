@@ -14,6 +14,7 @@ from typing import Any, Coroutine, Dict, List, Literal, Optional, Tuple, Union
 
 import ccxt
 import ccxt.async_support as ccxt_async
+import ccxt.pro as ccxt_pro
 from cachetools import TTLCache
 from ccxt import TICK_SIZE
 from dateutil import parser
@@ -22,7 +23,7 @@ from pandas import DataFrame, concat
 from freqtrade.constants import (DEFAULT_AMOUNT_RESERVE_PERCENT, NON_OPEN_EXCHANGE_STATES, BidAsk,
                                  BuySell, Config, EntryExit, ExchangeConfig,
                                  ListPairsWithTimeframes, MakerTaker, OBLiteral, PairWithTimeframe)
-from freqtrade.data.converter import clean_ohlcv_dataframe, ohlcv_to_dataframe, trades_dict_to_list
+from freqtrade.data.converter import clean_ohlcv_dataframe, ohlcv_to_dataframe, trades_dict_to_list,ohlcv_to_dataframe_with_delta
 from freqtrade.enums import OPTIMIZE_MODES, CandleType, MarginMode, PriceType, TradingMode
 from freqtrade.exceptions import (DDosProtection, ExchangeError, InsufficientFundsError,
                                   InvalidOrderException, OperationalException, PricingError,
@@ -43,7 +44,7 @@ from freqtrade.misc import (chunks, deep_merge_dicts, file_dump_json, file_load_
 from freqtrade.plugins.pairlist.pairlist_helpers import expand_pairlist
 from freqtrade.util import dt_from_ts, dt_now
 from freqtrade.util.datetime_helpers import dt_humanize, dt_ts
-
+from freqtrade.exchange.binance_ccxt import Binance_Sync, Binance_Async, Binance_Pro
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class Exchange:
         """
         self._api: ccxt.Exchange
         self._api_async: ccxt_async.Exchange = None
+        self._api_pro: ccxt_pro.Exchange = None
         self._markets: Dict = {}
         self._trading_fees: Dict[str, Any] = {}
         self._leverage_tiers: Dict[str, List[Dict]] = {}
@@ -181,6 +183,13 @@ class Exchange:
         self._api_async = self._init_ccxt(
             exchange_conf, ccxt_async, ccxt_kwargs=ccxt_async_config)
 
+        ccxt_pro_config = self._ccxt_config
+        ccxt_pro_config = deep_merge_dicts(exchange_conf.get('ccxt_config', {}),
+                                             ccxt_pro_config)
+        ccxt_pro_config = deep_merge_dicts(exchange_conf.get('ccxt_pro_config', {}),
+                                             ccxt_pro_config)
+        self._api_pro =  self._init_ccxt (exchange_conf, ccxt_pro, ccxt_kwargs=ccxt_pro_config)
+
         logger.info(f'Using Exchange "{self.name}"')
         self.required_candle_call_count = 1
         if validate:
@@ -210,7 +219,8 @@ class Exchange:
         if (self._api_async and inspect.iscoroutinefunction(self._api_async.close)
                 and self._api_async.session):
             logger.debug("Closing async ccxt session.")
-            # self.loop.run_until_complete(self._api_async.close())
+            asyncio.get_event_loop().create_task(self._api_async.close()) #self.loop.run_until_complete(self._api_async.close())
+            asyncio.get_event_loop().create_task(self._api_pro.close())
         # if self.loop and not self.loop.is_closed():
             # self.loop.close()
 
@@ -259,8 +269,18 @@ class Exchange:
         if ccxt_kwargs:
             ex_config.update(ccxt_kwargs)
         try:
-
-            api = getattr(ccxt_module, name.lower())(ex_config)
+            # v = getattr(ccxt_module, name.lower())
+            print (ccxt_module is ccxt)
+            if name.lower() == 'binance' :
+                if ccxt_module is ccxt:
+                    api = Binance_Sync(ex_config)
+                elif ccxt_module is ccxt_async :
+                    api = Binance_Async(ex_config)
+                elif ccxt_module is ccxt_pro :
+                    api = Binance_Pro(ex_config)
+            else :
+                api = getattr(ccxt_module, name.lower())(ex_config)
+                print(api)
         except (KeyError, AttributeError) as e:
             raise OperationalException(f'Exchange {name} is not supported') from e
         except ccxt.BaseError as e:
@@ -478,12 +498,21 @@ class Exchange:
         except (asyncio.TimeoutError, ccxt.BaseError) as e:
             logger.warning('Could not load async markets. Reason: %s', e)
             return
+    async def _load_pro_markets(self, reload: bool = False) -> None:
+        try:
+            if self._api_pro:
+                await  self._api_pro.load_markets(reload=reload, params={})
+        
 
+        except (asyncio.TimeoutError, ccxt.BaseError) as e:
+            logger.warning('Could not load async markets. Reason: %s', e)
+            return
     def _load_markets(self) -> None:
         """ Initialize markets both sync and async """
         try:
             self._markets = self._api.load_markets(params={})
-            self._load_async_markets()
+            asyncio.get_event_loop().create_task (self._load_async_markets())
+            asyncio.get_event_loop().create_task (self._load_pro_markets())
             self._last_markets_refresh = dt_ts()
             if self._ft_has['needs_trading_fees']:
                 self._trading_fees = self.fetch_trading_fees()
@@ -833,6 +862,10 @@ class Exchange:
         :param leverage: The amount of leverage being used on the current trade
         """
         return stake_amount / leverage
+
+    #ccxt pro
+    async def watch_trades(self, symbol: str):
+        return await self._api_pro.watch_trades(symbol)
 
     # Dry-run methods
 
@@ -1317,7 +1350,7 @@ class Exchange:
                 return {}
 
         try:
-            order = self._api.cancel_order(order_id, pair, params=params)
+            order = await self._api_async.cancel_order(order_id, pair, params= params) #self._api.cancel_order(order_id, pair, params=params)
             self._log_exchange_response('cancel_order', order)
             order = self._order_contracts_to_amount(order)
             return order
@@ -1913,7 +1946,7 @@ class Exchange:
         """
         return (float(fee['cost']),
                 fee['currency'],
-                self.calculate_fee_rate(
+                await self.calculate_fee_rate(
                     fee,
                     symbol,
                     cost,
@@ -2057,7 +2090,7 @@ class Exchange:
         if ticks and cache:
             idx = -2 if drop_incomplete and len(ticks) > 1 else -1
             self._pairs_last_refresh_time[(pair, timeframe, c_type)] = ticks[idx][0] // 1000
-        # keeping parsed dataframe in cache
+        
         ohlcv_df = ohlcv_to_dataframe(ticks, timeframe, pair=pair, fill_missing=True,
                                       drop_incomplete=drop_incomplete)
         if cache:

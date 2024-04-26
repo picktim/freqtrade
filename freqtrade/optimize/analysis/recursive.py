@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import shutil
 from copy import deepcopy
 from datetime import timedelta
@@ -127,7 +128,7 @@ class RecursiveAnalysis(BaseAnalysis):
         backtesting.load_bt_data_detail()
         varholder.timeframe = backtesting.timeframe
 
-        varholder.indicators = backtesting.strategy.advise_all_indicators(varholder.data)
+        varholder.indicators = asyncio.run( backtesting.strategy.advise_all_indicators(varholder.data))
 
     def fill_partial_varholder(self, start_date, startup_candle):
         logger.info(f"Calculating indicators using startup candle of {startup_candle}.")

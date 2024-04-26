@@ -276,6 +276,60 @@ def _download_pair_history(pair: str, *,
         return False
 
 
+async def async_load_pair_history_data(pair: str, *,
+                           exchange: Exchange,
+                           timeframe: str = '5m',
+                           new_pairs_days: int = 30,
+                           since_date :datetime = None,
+                           candle_type: CandleType,                         
+                           ) -> DataFrame:
+    """
+    Download latest candles from the exchange for the pair and timeframe passed in parameters
+    The data is downloaded starting from the last correct data that
+    exists in a cache. If timerange starts earlier than the data in the cache,
+    the full data will be redownloaded
+
+    :param pair: pair to download
+    :param timeframe: Timeframe (e.g "5m")
+    :param timerange: range of time to download
+    :param candle_type: Any of the enum CandleType (must match trading mode!)
+    :param erase: Erase existing data
+    :return: bool with success state
+    """
+    try:
+   
+        _30day_timerange =  int((datetime.now() - timedelta(days=new_pairs_days)
+                                                    ).timestamp()) * 1000
+        if since_date is None :
+            since_ms = _30day_timerange
+        else :
+            since_ms = int (since_date.timestamp() * 1000)
+            since_ms = since_ms if   since_ms >= _30day_timerange else _30day_timerange
+        # Default since_ms to 30 days if nothing is given
+        pair, timeframe, candle_type, new_data, _ohlcv_partial_candle \
+                                        = await exchange._async_get_historic_ohlcv(pair=pair,
+                                               timeframe=timeframe,
+                                               since_ms=since_ms ,
+                                               candle_type=candle_type,
+                                               )
+        # TODO: Maybe move parsing to exchange class (?)
+        new_dataframe = ohlcv_to_dataframe(new_data, timeframe, pair,
+                                           fill_missing=False, drop_incomplete=True)
+        if data.empty:
+            data = new_dataframe
+        else:
+            # Run cleaning again to ensure there were no duplicate candles
+            # Especially between existing and new data.
+            data = clean_ohlcv_dataframe(concat([data, new_dataframe], axis=0), timeframe, pair,
+                                         fill_missing=False, drop_incomplete=False)
+        return data
+
+    except Exception:
+        logger.exception(
+            f'Failed to download history data for pair: "{pair}", timeframe: {timeframe}.'
+        )
+        return None
+    
 def refresh_backtest_ohlcv_data(exchange: Exchange, pairs: List[str], timeframes: List[str],
                                 datadir: Path, trading_mode: str,
                                 timerange: Optional[TimeRange] = None,

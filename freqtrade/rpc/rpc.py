@@ -2,6 +2,7 @@
 This module contains class to define a RPC communications
 """
 import logging
+import asyncio
 from abc import abstractmethod
 from datetime import date, datetime, timedelta, timezone
 from math import isnan
@@ -1301,7 +1302,7 @@ class RPC:
         strategy.dp = DataProvider(config, exchange=exchange, pairlists=None)
         strategy.ft_bot_start()
 
-        df_analyzed = strategy.analyze_ticker(_data[pair], {'pair': pair})
+        df_analyzed = asyncio.run( strategy.analyze_ticker(_data[pair], {'pair': pair}))
         df_analyzed = trim_dataframe(df_analyzed, timerange_parsed, startup_candles=startup_candles)
 
         return RPC._convert_dataframe_to_dict(strategy.get_strategy_name(), pair, timeframe,

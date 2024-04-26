@@ -6,10 +6,10 @@ Common Interface for bot and strategy to access data.
 """
 import logging
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from pandas import DataFrame, Timedelta, Timestamp, to_timedelta
+from pandas import DataFrame, Timedelta, Timestamp, to_timedelta, concat
 
 from freqtrade.configuration import TimeRange
 from freqtrade.constants import (FULL_DATAFRAME_THRESHOLD, Config, ListPairsWithTimeframes,
@@ -23,8 +23,8 @@ from freqtrade.misc import append_candles_to_dataframe
 from freqtrade.rpc import RPCManager
 from freqtrade.rpc.rpc_types import RPCAnalyzedDFMsg
 from freqtrade.util import PeriodicCache
-
-
+from freqtrade.data.history.history_utils import ohlcv_to_dataframe, clean_ohlcv_dataframe
+from freqtrade.util.datetime_helpers import dt_now
 logger = logging.getLogger(__name__)
 
 NO_EXCHANGE_EXCEPTION = 'Exchange is not available to DataProvider.'
@@ -442,8 +442,9 @@ class DataProvider:
         """
         if self._exchange is None:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
-        final_pairs = (pairlist + helping_pairs) if helping_pairs else pairlist
-        await self._exchange.refresh_latest_ohlcv(final_pairs)
+        # final_pairs = (pairlist + helping_pairs) if helping_pairs else pairlist
+
+        await self._exchange.refresh_latest_ohlcv(helping_pairs)
 
     @property
     def available_pairs(self) -> ListPairsWithTimeframes:
@@ -455,6 +456,56 @@ class DataProvider:
             raise OperationalException(NO_EXCHANGE_EXCEPTION)
         return list(self._exchange._klines.keys())
 
+    async def watch_trades (self, pair: str) :
+         return await self._exchange.watch_trades(pair)
+    
+    async def get_pair_history_data (self, pair: str,
+                                     timeframe:  str,
+                                     data :DataFrame = None, 
+                                     since_date:datetime = None, 
+                                     new_pairs_days: int = 30) :
+
+        try:
+            since_ms : int = 0
+            candle_type=self._config.get('candle_type_def', CandleType.SPOT)
+            _30day_timerange =  int((datetime.now() - timedelta(days=new_pairs_days)
+                                                        ).timestamp()) * 1000
+            since_date = None if  (data is None or len(data) == 0) else data.iloc[-1]['date']
+
+            if since_date is None :
+                since_ms = _30day_timerange
+            else :
+                since_ms = int (since_date.timestamp() * 1000)
+                since_ms = since_ms if   since_ms >= _30day_timerange else _30day_timerange
+            
+            # Default since_ms to 30 days if nothing is given
+            pair, timeframe, candle_type, new_data, _ohlcv_partial_candle \
+                                            = await self. _exchange._async_get_historic_ohlcv(pair=pair,
+                                                timeframe=timeframe,
+                                                since_ms=since_ms ,
+                                                candle_type=candle_type,
+                                                )
+            new_dataframe = ohlcv_to_dataframe(new_data, timeframe, pair,
+                                           fill_missing=False, drop_incomplete=True)
+            # # TODO: Maybe move parsing to exchange class (?)
+            # new_dataframe = ohlcv_to_dataframe(concat([data, new_dataframe], axis=0), timeframe, pair,
+            #                                 fill_missing=False, drop_incomplete=True)
+            if data is None:
+                data = new_dataframe
+            else:
+                # Run cleaning again to ensure there were no duplicate candles
+                # Especially between existing and new data.
+                data = clean_ohlcv_dataframe(concat([data, new_dataframe], axis=0), timeframe, pair,
+                                            fill_missing=False, drop_incomplete=False)
+            return data
+
+        except Exception:
+            logger.exception(
+                f'Failed to download history data for pair: "{pair}", timeframe: {timeframe}.'
+            )
+            return None
+        
+      
     def ohlcv(
         self,
         pair: str,

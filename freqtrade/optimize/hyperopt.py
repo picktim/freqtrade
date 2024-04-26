@@ -5,6 +5,7 @@ This module contains the hyperopt logic
 """
 
 import logging
+import asyncio
 import random
 import sys
 import warnings
@@ -443,7 +444,7 @@ class Hyperopt:
         return random_state or random.randint(1, 2**16 - 1)
 
     def advise_and_trim(self, data: Dict[str, DataFrame]) -> Dict[str, DataFrame]:
-        preprocessed = self.backtesting.strategy.advise_all_indicators(data)
+        preprocessed = asyncio.run( self.backtesting.strategy.advise_all_indicators(data))
 
         # Trim startup period from analyzed dataframe to get correct dates for output.
         # This is only used to keep track of min/max date after trimming.

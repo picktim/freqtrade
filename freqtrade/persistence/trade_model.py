@@ -1280,6 +1280,13 @@ class LocalTrade:
         return Trade.get_trades_proxy(is_open=True)
 
     @staticmethod
+    def get_open_trade(pair: str) -> List[Any] :
+        """
+        Retrieve open trade for pair
+        """
+        return Trade.get_trades_proxy(pair= pair, is_open= True)
+    
+    @staticmethod
     def get_open_trade_count() -> int:
         """
         get open trade count

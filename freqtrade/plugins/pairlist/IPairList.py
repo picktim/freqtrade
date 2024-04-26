@@ -141,7 +141,7 @@ class IPairList(LoggingMixin, ABC):
         """
         raise NotImplementedError()
 
-    def gen_pairlist(self, tickers: Tickers) -> List[str]:
+    async def gen_pairlist(self, tickers: Tickers) -> List[str]:
         """
         Generate the pairlist.
 
@@ -158,7 +158,7 @@ class IPairList(LoggingMixin, ABC):
         raise OperationalException("This Pairlist Handler should not be used "
                                    "at the first position in the list of Pairlist Handlers.")
 
-    def filter_pairlist(self, pairlist: List[str], tickers: Tickers) -> List[str]:
+    async def filter_pairlist(self, pairlist: List[str], tickers: Tickers) -> List[str]:
         """
         Filters and sorts pairlist and returns the whitelist again.
 

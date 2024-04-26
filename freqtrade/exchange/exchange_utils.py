@@ -167,7 +167,7 @@ def timeframe_to_next_date(timeframe: str, date: Optional[datetime] = None) -> d
     return dt_from_ts(new_timestamp)
 
 
-def date_minus_candles(
+def date_minus_candles(            
         timeframe: str, candle_count: int, date: Optional[datetime] = None) -> datetime:
     """
     subtract X candles from a date.

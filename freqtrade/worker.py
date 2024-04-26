@@ -153,7 +153,7 @@ class Worker:
         :return: Any (result of execution of func)
         """
         last_throttle_start_time = time.time()
-        logger.debug("========================================")
+        logger.info("========================================")
         result = await func # func(*args, **kwargs)
         time_passed = time.time() - last_throttle_start_time
         sleep_duration = throttle_secs - time_passed
@@ -170,7 +170,7 @@ class Worker:
         sleep_duration = max(sleep_duration, 0.0)
         # next_iter = datetime.now(timezone.utc) + timedelta(seconds=sleep_duration)
 
-        logger.debug(f"Throttling with '{func.__name__}()': sleep for {sleep_duration:.2f} s, "
+        logger.info(f"Throttling with '{func.__name__}()': sleep for {sleep_duration:.2f} s, "
                      f"last iteration took {time_passed:.2f} s."
                      #  f"next: {next_iter}"
                      )

@@ -44,3 +44,6 @@ def strategy_safe_wrapper(f: F, message: str = "", default_retval=None, supress_
             return default_retval
 
     return cast(F, wrapper)
+
+def strategy_safe_wrapper2(f: F, message: str = "", default_retval=None, supress_error=False) -> F:
+    pass
