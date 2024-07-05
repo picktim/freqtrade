@@ -10,6 +10,8 @@ from freqtrade import constants
 from freqtrade.configuration.deprecated_settings import process_deprecated_setting
 from freqtrade.enums import RunMode, TradingMode
 from freqtrade.exceptions import OperationalException
+from freqtrade.exceptions import ConfigurationError
+
 
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,8 @@ def validate_config_consistency(conf: Dict[str, Any], *, preliminary: bool = Fal
     _validate_consumers(conf)
     validate_migrated_strategy_settings(conf)
 
+    _validate_orderflow(conf)
+    
     # validate configuration before returning
     logger.info('Validating configuration ...')
     validate_config_schema(conf, preliminary=preliminary)
@@ -397,6 +401,14 @@ def _validate_consumers(conf: Dict[str, Any]) -> None:
             # Warning here or require it?
             logger.warning("To receive best performance with external data, "
                            "please set `process_only_new_candles` to False")
+
+
+def _validate_orderflow(conf: Dict[str, Any]) -> None:
+    if conf.get('exchange', {}).get('use_public_trades'):
+        if 'orderflow' not in conf:
+            raise ConfigurationError(
+                "Orderflow is a required configuration key when using public trades."
+            )
 
 
 def _strategy_settings(conf: Dict[str, Any]) -> None:

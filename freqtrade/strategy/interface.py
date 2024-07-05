@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from pandas import DataFrame
 
 from freqtrade.constants import CUSTOM_TAG_MAX_LENGTH, Config, IntOrInf, ListPairsWithTimeframes
+from freqtrade.data.converter import populate_dataframe_with_trades
 from freqtrade.data.dataprovider import DataProvider
 from freqtrade.enums import (CandleType, ExitCheckTuple, ExitType, MarketDirection, RunMode,
                              SignalDirection, SignalTagType, SignalType, TradingMode)
@@ -897,6 +898,35 @@ class IStrategy(ABC, HyperStrategyMixin):
 
         return dataframe
 
+    def ft_advise_signals(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        """
+        Call advise_entry and advise_exit and return the resulting dataframe.
+        :param dataframe: Dataframe containing data from exchange, as well as pre-calculated
+                          indicators
+        :param metadata: Metadata dictionary with additional data (e.g. 'pair')
+        :return: DataFrame of candle (OHLCV) data with indicator data and signals added
+
+        """
+
+        dataframe = self.advise_entry(dataframe, metadata)
+        dataframe = self.advise_exit(dataframe, metadata)
+        return dataframe
+
+    def _if_enabled_populate_trades(self, dataframe: DataFrame, metadata: dict):
+        use_public_trades = self.config.get('exchange', {}).get('use_public_trades', False)
+        if use_public_trades:
+            trades = self.dp.trades(pair=metadata['pair'], copy=False)
+
+            config = self.config
+            config['timeframe'] = self.timeframe
+            # TODO: slice trades to size of dataframe for faster backtesting
+            dataframe = populate_dataframe_with_trades(
+                config,
+                dataframe,
+                trades)
+
+            logger.debug("Populated dataframe with trades.")
+
     async def analyze_pair(self, pair: str) -> None:
         """
         Fetch data for this pair from dataprovider and analyze.
@@ -1352,7 +1382,7 @@ class IStrategy(ABC, HyperStrategyMixin):
                                         pair=trade.pair, trade=trade, order=order,
                                         current_time=current_time)
 
-    def advise_all_indicators(self, data: Dict[str, DataFrame]) -> Dict[str, DataFrame]:
+    async def advise_all_indicators(self, data: Dict[str, DataFrame]) -> Dict[str, DataFrame]:
         """
         Populates indicators for given candle (OHLCV) data (for multiple pairs)
         Does not run advise_entry or advise_exit!

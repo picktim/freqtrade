@@ -2291,7 +2291,7 @@ class FreqtradeBot(LoggingMixin):
 
         if not isclose(amount, order_amount, abs_tol=constants.MATH_CLOSE_PREC):
             # * Leverage could be a cause for this warning
-            logger.warning(f"Amount {amount} does not match amount {trade.amount}")
+            logger.warning(f"Amount {amount} does not ma  tch amount {trade.amount}")
             raise DependencyException("Half bought? Amounts don't match")
 
         if fee_abs != 0:

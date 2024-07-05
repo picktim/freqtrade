@@ -14,8 +14,12 @@ from pandas import DataFrame, Timedelta, Timestamp, to_timedelta, concat
 from freqtrade.configuration import TimeRange
 from freqtrade.constants import (FULL_DATAFRAME_THRESHOLD, Config, ListPairsWithTimeframes,
                                  PairWithTimeframe)
-from freqtrade.data.history import load_pair_history
-from freqtrade.enums import CandleType, RPCMessageType, RunMode
+# from freqtrade.data.history import load_pair_history
+# from freqtrade.enums import CandleType, RPCMessageType, RunMode
+
+from freqtrade.data.history import get_datahandler, load_pair_history
+from freqtrade.enums import CandleType, RPCMessageType, RunMode, TradingMode
+
 from freqtrade.exceptions import ExchangeError, OperationalException
 from freqtrade.exchange import Exchange, timeframe_to_prev_date, timeframe_to_seconds
 from freqtrade.exchange.types import OrderBook
@@ -585,3 +589,39 @@ class DataProvider:
         if always_send or message not in self.__msg_cache:
             self._msg_queue.append(message)
         self.__msg_cache[message] = True
+    
+    def trades(
+        self,
+        pair: str,
+        timeframe: Optional[str] = None,
+        copy: bool = True,
+        candle_type: str = ''
+    ) -> DataFrame:
+        """
+        Get candle (TRADES) data for the given pair as DataFrame
+        Please use the `available_pairs` method to verify which pairs are currently cached.
+        :param pair: pair to get the data for
+        :param timeframe: Timeframe to get data for
+        :param candle_type: '', mark, index, premiumIndex, or funding_rate
+        :param copy: copy dataframe before returning if True.
+                     Use False only for read-only operations (where the dataframe is not modified)
+        """
+        if self.runmode in (RunMode.DRY_RUN, RunMode.LIVE):
+            if self._exchange is None:
+                raise OperationalException(NO_EXCHANGE_EXCEPTION)
+            _candle_type = CandleType.from_string(
+                candle_type) if candle_type != '' else self._config['candle_type_def']
+            return self._exchange.trades(
+                (pair, timeframe or self._config['timeframe'], _candle_type),
+                copy=copy
+            )
+        elif self.runmode in (RunMode.BACKTEST, RunMode.HYPEROPT):
+            _candle_type = CandleType.from_string(
+                candle_type) if candle_type != '' else self._config['candle_type_def']
+            data_handler = get_datahandler(
+                self._config['datadir'], data_format=self._config['dataformat_trades'])
+            trades_df = data_handler.trades_load(pair, TradingMode.FUTURES)
+            return trades_df
+        
+        else:
+            return DataFrame()
